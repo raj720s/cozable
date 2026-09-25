@@ -1,0 +1,74 @@
+diff --git a/node_modules/react-native-fast-tflite/cpp/HybridTfliteModel.cpp b/node_modules/react-native-fast-tflite/cpp/HybridTfliteModel.cpp
+--- a/node_modules/react-native-fast-tflite/cpp/HybridTfliteModel.cpp
++++ b/node_modules/react-native-fast-tflite/cpp/HybridTfliteModel.cpp
+@@ -95,7 +95,15 @@
+   for (int32_t i = 0; i < inputCount; i++) {
+     TfLiteTensor* tensor = TfLiteInterpreterGetInputTensor(_interpreter, i);
+     const std::shared_ptr<ArrayBuffer>& buffer = input[i];
+-    TfLiteTensorCopyFromBuffer(tensor, buffer->data(), buffer->size());
++    TfLiteStatus status = TfLiteTensorCopyFromBuffer(tensor, buffer->data(), buffer->size());
++    if (status != kTfLiteOk) [[unlikely]] {
++      throw std::runtime_error(
++          "TFLite: Input buffer " + std::to_string(i) + " size (" +
++          std::to_string(buffer->size()) + ") does not match input tensor \"" +
++          std::string(TfLiteTensorName(tensor)) + "\" expected size (" +
++          std::to_string(TfLiteTensorByteSize(tensor)) +
++          ")! Status: " + tfLiteStatusToString(status));
++    }
+   }
+ }
+ 
+diff --git a/node_modules/react-native-fast-tflite/cpp/HybridTfliteModule.cpp b/node_modules/react-native-fast-tflite/cpp/HybridTfliteModule.cpp
+--- a/node_modules/react-native-fast-tflite/cpp/HybridTfliteModule.cpp
++++ b/node_modules/react-native-fast-tflite/cpp/HybridTfliteModule.cpp
+@@ -40,6 +40,14 @@
+ 
+   // Configure interpreter via options
+   TfLiteInterpreterOptions* options = TfLiteInterpreterOptionsCreate();
++  TfLiteInterpreterOptionsSetNumThreads(options, 4);
++
++  // YOLOv8 / modern quantized models need XNNPACK kernels — bare CPU reference
++  // often returns kTfLiteError on Invoke even when AllocateTensors succeeds.
++  TfLiteDelegate* xnnpack = getXNNPackDelegate();
++  if (xnnpack != nullptr) {
++    TfLiteInterpreterOptionsAddDelegate(options, xnnpack);
++  }
+ 
+   // Add all hardware accelerated delegates (e.g. GPU, NPU, ...)
+   // if any. The default CPU delegate will always be available.
+diff --git a/node_modules/react-native-fast-tflite/cpp/TfliteHelpers.cpp b/node_modules/react-native-fast-tflite/cpp/TfliteHelpers.cpp
+--- a/node_modules/react-native-fast-tflite/cpp/TfliteHelpers.cpp
++++ b/node_modules/react-native-fast-tflite/cpp/TfliteHelpers.cpp
+@@ -171,4 +171,21 @@
+ #endif
+ }
+ 
++#if defined(ANDROID)
++// Bundled in libtensorflowlite_jni.so but not exposed via packaged headers.
++extern "C" {
++TfLiteDelegate* TfLiteXNNPackDelegateCreate(const void* options);
++}
++#endif
++
++TfLiteDelegate* getXNNPackDelegate() {
++#if defined(ANDROID)
++  // One shared delegate — AddDelegate requires the pointer to outlive interpreters.
++  static TfLiteDelegate* delegate = TfLiteXNNPackDelegateCreate(nullptr);
++  return delegate;
++#else
++  return nullptr;
++#endif
++}
++
+ } // namespace margelo::nitro::tflite
+diff --git a/node_modules/react-native-fast-tflite/cpp/TfliteHelpers.hpp b/node_modules/react-native-fast-tflite/cpp/TfliteHelpers.hpp
+--- a/node_modules/react-native-fast-tflite/cpp/TfliteHelpers.hpp
++++ b/node_modules/react-native-fast-tflite/cpp/TfliteHelpers.hpp
+@@ -22,5 +22,7 @@
+ TfLiteDelegate* getMetalDelegate();
+ TfLiteDelegate* getNNAPIDelegate();
+ TfLiteDelegate* getAndroidGPUDelegate();
++/** Process-lifetime XNNPACK delegate (Android). nullptr on unsupported platforms. */
++TfLiteDelegate* getXNNPackDelegate();
+ 
+ } // namespace margelo::nitro::tflite
