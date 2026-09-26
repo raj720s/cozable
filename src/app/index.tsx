@@ -11,6 +11,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { AnimatedLogo } from '../components/AnimatedLogo';
 import { colors, fonts } from '../theme/scanner';
 
 export default function LoginScreen() {
@@ -37,12 +38,7 @@ export default function LoginScreen() {
         >
           {/* Logo */}
           <View style={styles.logoContainer}>
-            <View style={styles.logoOuterRing}>
-              <View style={styles.logoDotIndicator} />
-              <View style={styles.logoInnerCircle}>
-                <View style={styles.logoCore} />
-              </View>
-            </View>
+            <AnimatedLogo size={120} />
           </View>
 
           {/* Titles */}
@@ -129,6 +125,9 @@ export default function LoginScreen() {
 
           {/* Footer */}
           <View style={styles.footer}>
+            <Text style={{ fontFamily: fonts.sans, fontSize: 14, color: '#9CA3AF', marginBottom: 12 }}>
+              Don't have an account? <Text style={{ color: '#06B6D4', fontFamily: fonts.sansMd }} onPress={() => router.push('/signup')}>Sign up</Text>
+            </Text>
             <Text style={styles.demoText}>
               Demo mode: any valid email and 6+ character password works.
             </Text>

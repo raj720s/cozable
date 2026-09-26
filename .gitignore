@@ -42,6 +42,9 @@ example
 /ios
 /android
 
+# Android machine-specific config (never commit)
+android/local.properties
+
 # Native module builds
 modules/*/android/build/
 modules/*/ios/build/

@@ -7,6 +7,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { BottomNav } from '../components/BottomNav';
 import { colors, fonts } from '../theme/scanner';
 
 export default function HomeScreen() {
@@ -200,36 +201,8 @@ export default function HomeScreen() {
         </ScrollView>
       </SafeAreaView>
 
-      {/* Bottom Navigation Bar */}
-      <View style={styles.bottomNav}>
-        <TouchableOpacity style={styles.navItem}>
-          <Text style={styles.navIconActive}>🏠</Text>
-          <Text style={styles.navTextActive}>Home</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.navItem}>
-          <Text style={styles.navIcon}>📦</Text>
-          <Text style={styles.navText}>Inventory</Text>
-        </TouchableOpacity>
-        
-        {/* Center Scan Button */}
-        <View style={styles.navCenter}>
-          <TouchableOpacity style={styles.navCenterBtn} onPress={handleScanPress} activeOpacity={0.9}>
-            <View style={styles.navCenterInner}>
-              <Text style={styles.navCenterIcon}>📷</Text>
-            </View>
-          </TouchableOpacity>
-          <Text style={styles.navCenterText}>Scan</Text>
-        </View>
-
-        <TouchableOpacity style={styles.navItem}>
-          <Text style={styles.navIcon}>⏱️</Text>
-          <Text style={styles.navText}>Use First</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={styles.navItem}>
-          <Text style={styles.navIcon}>☰</Text>
-          <Text style={styles.navText}>More</Text>
-        </TouchableOpacity>
-      </View>
+      {/* Shared Bottom Navigation */}
+      <BottomNav active="home" />
     </View>
   );
 }

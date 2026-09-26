@@ -130,9 +130,13 @@ function RootNavigator() {
         }}
       >
         <Stack.Screen name="index" />
+        <Stack.Screen name="signup" />
+        <Stack.Screen name="home" />
         <Stack.Screen name="camera" />
         <Stack.Screen name="summary" />
         <Stack.Screen name="gallery" />
+        <Stack.Screen name="inventory-updated" />
+        <Stack.Screen name="inventory" />
       </Stack>
     </>
   );

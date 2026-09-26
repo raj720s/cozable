@@ -775,7 +775,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   overlayContainer: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'transparent',
     zIndex: 1000,
     width: '100%',

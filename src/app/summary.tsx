@@ -263,7 +263,7 @@ export default function SummaryScreen() {
         <TouchableOpacity style={styles.exportBtn}>
           <Text style={styles.exportBtnText}>📥 Export Data</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.confirmBtn} onPress={() => router.replace('/home')}>
+        <TouchableOpacity style={styles.confirmBtn} onPress={() => router.replace({ pathname: '/inventory-updated' as any, params: { itemCount: '9', batchId: 'BCH-8824' } })}>
           <Text style={styles.confirmBtnText}>✓ Confirm All</Text>
         </TouchableOpacity>
       </View>
