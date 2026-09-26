@@ -36,7 +36,7 @@ function BootstrapGate({ children }: { children: React.ReactNode }) {
     requestPermission: requestMicPermission,
     canRequestPermission: canRequestMic,
   } = useMicrophonePermission();
-  const { isReady: modelReady, state: modelState, error: modelError } = useAppModel();
+  const { state: modelState, error: modelError } = useAppModel();
   const hydrateGallery = useScanStore((s) => s.hydrateGallery);
 
   const [permissionsSettled, setPermissionsSettled] = useState(false);
@@ -101,10 +101,15 @@ function BootstrapGate({ children }: { children: React.ReactNode }) {
     if (modelState === 'error' && modelError) {
       console.warn('TFLite model failed to load at startup', modelError);
     }
+    if (modelState === 'loaded') {
+      console.log('[Bootstrap] YOLO model ready');
+    }
   }, [modelState, modelError]);
 
-  const appReady =
-    permissionsSettled && gallerySettled && modelReady && fontsReady;
+  // Do NOT wait for model load — GPU/INT8 Interpreter init can hang on some
+  // devices and would freeze the splash forever. Camera already gates on isLoaded.
+  // Model continues loading in ModelProvider in the background.
+  const appReady = permissionsSettled && gallerySettled && fontsReady;
 
   useEffect(() => {
     if (!appReady) return;

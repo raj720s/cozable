@@ -34,13 +34,14 @@ class ExpoYoloTfliteModule : Module() {
     get() = requireNotNull(appContext.reactContext)
 
   companion object {
-    private const val MODEL_ASSET = "yolov8n_int8.tflite"
-    private const val INPUT_SIZE = 640
+    private const val MODEL_ASSET = "best_final.tflite"
+    private const val INPUT_SIZE = 480
     private const val NUM_CLASSES = 7
-    private const val NUM_ATTRS = 4 + NUM_CLASSES // 11
-    private const val NUM_ANCHORS = 8400
-    private const val CONF_THRESH = 0.005f // TEMP: was 0.25f — model scores ~0.01–0.04
-    private const val IOU_THRESH = 0.45f
+    private const val NUM_ATTRS = 4 + NUM_CLASSES + 1 // 12 (box + objectness + classes)
+    private const val NUM_ANCHORS = 4725
+    private const val CONF_THRESH = 0.30f
+    private const val IOU_THRESH = 0.30f
+    private const val MAX_DETECTIONS = 20
     private const val PAD_COLOR = 114f / 255f
 
     // Order MUST match data.yaml class order
@@ -179,8 +180,12 @@ class ExpoYoloTfliteModule : Module() {
 
   private fun ensureInterpreter() {
     if (interpreter != null) return
+    Log.i("YoloTflite", "Loading model asset=$MODEL_ASSET …")
     val modelBuffer = FileUtil.loadMappedFile(context, MODEL_ASSET)
-    interpreter = buildInterpreter(modelBuffer, preferGpu = true)
+    // INT8 + GpuDelegate often hangs or stalls on first Interpreter() on Samsung /
+    // Adreno. Prefer CPU (XNNPACK) for quantized assets; float32 may still use GPU.
+    val preferGpu = !MODEL_ASSET.contains("int8", ignoreCase = true)
+    interpreter = buildInterpreter(modelBuffer, preferGpu = preferGpu)
     Log.i(
       "YoloTflite",
       if (usingGpu) "Interpreter ready with GPU delegate"
@@ -487,7 +492,7 @@ class ExpoYoloTfliteModule : Module() {
     channels: Int,
     anchors: Int,
   ): List<Detection> {
-    val numClasses = channels - 4
+    val numClasses = NUM_CLASSES
     var needsSigmoid = false
     for (i in 0 until min(anchors, 32)) {
       val s = raw[4 * anchors + i]
@@ -546,25 +551,35 @@ class ExpoYoloTfliteModule : Module() {
     }
 
     val kept = nms(candidates)
+    // Cap to top-N most confident (safety against sticker fan-out)
+    val capped = kept
+      .sortedByDescending { it.confidence }
+      .take(MAX_DETECTIONS)
     Log.d(
       "ExpoYoloTflite",
-      "decode candidates=${candidates.size} kept=${kept.size} sigmoid=$needsSigmoid normCoords=$coordsNormalized",
+      "decode candidates=${candidates.size} kept=${kept.size} capped=${capped.size} sigmoid=$needsSigmoid normCoords=$coordsNormalized",
     )
-    return kept
+    return capped
   }
 
   private fun nms(detections: List<Detection>): List<Detection> {
+    if (detections.isEmpty()) return emptyList()
+
+    // Sort by confidence descending
     val sorted = detections.sortedByDescending { it.confidence }
     val suppressed = BooleanArray(sorted.size)
     val keep = ArrayList<Detection>()
+
     for (i in sorted.indices) {
       if (suppressed[i]) continue
       val a = sorted[i]
       keep.add(a)
+
+      // Class-agnostic: one sticker → one box (highest confidence class wins)
       for (j in i + 1 until sorted.size) {
         if (suppressed[j]) continue
         val b = sorted[j]
-        if (a.classId == b.classId && iou(a, b) > IOU_THRESH) {
+        if (iou(a, b) > IOU_THRESH) {
           suppressed[j] = true
         }
       }
