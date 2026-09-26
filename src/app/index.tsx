@@ -1,131 +1,146 @@
 import { router } from 'expo-router';
 import { useState } from 'react';
 import {
+  KeyboardAvoidingView,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useScanStore } from '../store/scanStore';
-import { colors, fonts, ROTATION_DAYS } from '../theme/scanner';
-import { formatBytes, sumGalleryBytes } from '../utils/galleryStorage';
+import { AnimatedLogo } from '../components/AnimatedLogo';
+import { colors, fonts } from '../theme/scanner';
 
-export default function Index() {
-  const [error, setError] = useState<string | null>(null);
-  const [expectedCount, setExpectedCountInput] = useState(9);
-  const setExpectedCount = useScanStore((s) => s.setExpectedCount);
-  const gallery = useScanStore((s) => s.gallery);
-  const bytesUsed = sumGalleryBytes(gallery);
+export default function LoginScreen() {
+  const [email, setEmail] = useState('demo.operator@colorsweep.io');
+  const [password, setPassword] = useState('password');
+  const [showPassword, setShowPassword] = useState(false);
+  const [keepLoggedIn, setKeepLoggedIn] = useState(true);
 
-  const bump = (delta: number) => {
-    setError(null);
-    setExpectedCountInput((n) => Math.max(1, Math.min(99, n + delta)));
-  };
-
-  const handleStart = () => {
-    if (expectedCount < 1 || expectedCount > 99) {
-      setError('Enter a number between 1 and 99');
-      return;
-    }
-    setExpectedCount(expectedCount);
-    router.push({
-      pathname: '/camera',
-      params: { expectedCount: String(expectedCount) },
-    });
+  const handleLogin = () => {
+    // Navigate to the main home screen (formerly index.tsx)
+    router.replace('/home');
   };
 
   return (
     <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
-      <ScrollView
-        contentContainerStyle={styles.scroll}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
+      <KeyboardAvoidingView
+        style={styles.keyboardView}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       >
-        <View style={styles.topBar}>
-          <View style={styles.brandRow}>
-            <View style={styles.logoMark}>
-              <View style={[styles.logoDot, { backgroundColor: '#2563EB' }]} />
-              <View style={[styles.logoDot, { backgroundColor: '#EAB308' }]} />
-              <View style={[styles.logoDot, { backgroundColor: '#DC2626' }]} />
-              <View style={[styles.logoDot, { backgroundColor: '#16A34A' }]} />
+        <ScrollView
+          contentContainerStyle={styles.scroll}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {/* Logo */}
+          <View style={styles.logoContainer}>
+            <AnimatedLogo size={120} />
+          </View>
+
+          {/* Titles */}
+          <View style={styles.headerTextContainer}>
+            <Text style={styles.welcomeText}>
+              Welcome to Color<Text style={styles.sweepText}>Sweep</Text>
+            </Text>
+            <Text style={styles.subtitle}>Sign in to start scanning labels</Text>
+          </View>
+
+          {/* Login Card */}
+          <View style={styles.card}>
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>EMAIL</Text>
+              <TextInput
+                style={styles.input}
+                value={email}
+                onChangeText={setEmail}
+                keyboardType="email-address"
+                autoCapitalize="none"
+                placeholderTextColor={colors.muted}
+                selectionColor={colors.primary}
+              />
             </View>
-            <View>
-              <Text style={styles.brandTitle}>DAY COLOUR SCANNER</Text>
-              <Text style={styles.brandSub}>INDUSTRIAL OPTICAL VISION v2.4</Text>
-            </View>
-          </View>
-          <TouchableOpacity
-            style={styles.iconBtn}
-            onPress={() => router.push('/gallery')}
-            accessibilityLabel="Open gallery / diagnostics"
-          >
-            <Text style={styles.iconBtnGlyph}>⚙</Text>
-          </TouchableOpacity>
-        </View>
 
-        <Text style={styles.hero}>
-          Scan tray labels quickly using your phone camera with real-time neural edge
-          detection.
-        </Text>
-
-        {gallery.length > 0 ? (
-          <Text style={styles.galleryHint}>
-            {gallery.length} saved · {formatBytes(bytesUsed)}
-          </Text>
-        ) : null}
-
-        <View style={styles.card}>
-          <View style={styles.cardHead}>
-            <Text style={styles.cardLabel}>EXPECTED TRAY COUNT</Text>
-            <Text style={styles.cardMeta}>BAY RACK</Text>
-          </View>
-
-          <View style={styles.stepper}>
-            <TouchableOpacity
-              style={styles.stepBtn}
-              onPress={() => bump(-1)}
-              accessibilityLabel="Decrease tray count"
-            >
-              <Text style={styles.stepBtnText}>−</Text>
-            </TouchableOpacity>
-            <View style={styles.stepValue}>
-              <Text style={styles.stepCount}>{expectedCount}</Text>
-              <Text style={styles.stepCaption}>Trays In Batch</Text>
-            </View>
-            <TouchableOpacity
-              style={styles.stepBtn}
-              onPress={() => bump(1)}
-              accessibilityLabel="Increase tray count"
-            >
-              <Text style={styles.stepBtnText}>+</Text>
-            </TouchableOpacity>
-          </View>
-          {error ? <Text style={styles.errorText}>{error}</Text> : null}
-        </View>
-
-        <View style={styles.card}>
-          <View style={styles.cardHead}>
-            <Text style={styles.cardLabel}>ROTATION DAY REFERENCE</Text>
-            <Text style={styles.cardMeta}>HACCP 7-DAY</Text>
-          </View>
-          {ROTATION_DAYS.map((row) => (
-            <View key={row.day} style={styles.dayRow}>
-              <View style={styles.dayLeft}>
-                <View style={[styles.dayDot, { backgroundColor: row.hex }]} />
-                <Text style={styles.dayCode}>{row.day}</Text>
-                <Text style={styles.dayName}>{row.colour}</Text>
+            <View style={styles.inputGroup}>
+              <View style={styles.labelRow}>
+                <Text style={styles.label}>PASSWORD</Text>
+                <TouchableOpacity>
+                  <Text style={styles.forgotText}>Forgot?</Text>
+                </TouchableOpacity>
               </View>
-              <Text style={styles.dayHex}>{row.hex}</Text>
+              <View style={styles.passwordContainer}>
+                <TextInput
+                  style={styles.inputPassword}
+                  value={password}
+                  onChangeText={setPassword}
+                  secureTextEntry={!showPassword}
+                  placeholderTextColor={colors.muted}
+                  selectionColor={colors.primary}
+                />
+                <TouchableOpacity
+                  style={styles.showBtn}
+                  onPress={() => setShowPassword(!showPassword)}
+                >
+                  <Text style={styles.showBtnText}>{showPassword ? 'Hide' : 'Show'}</Text>
+                </TouchableOpacity>
+              </View>
             </View>
-          ))}
-        </View>
 
-        <TouchableOpacity style={styles.primaryBtn} onPress={handleStart} activeOpacity={0.9}>
-          <Text style={styles.primaryBtnText}>START SCAN</Text>
-        </TouchableOpacity>
-      </ScrollView>
+            <View style={styles.optionsRow}>
+              <TouchableOpacity
+                style={styles.checkboxContainer}
+                onPress={() => setKeepLoggedIn(!keepLoggedIn)}
+                activeOpacity={0.8}
+              >
+                <View style={[styles.checkbox, keepLoggedIn && styles.checkboxActive]}>
+                  {keepLoggedIn && <Text style={styles.checkIcon}>✓</Text>}
+                </View>
+                <Text style={styles.checkboxLabel}>Keep terminal logged in</Text>
+              </TouchableOpacity>
+              <View style={styles.terminalStatus}>
+                <View style={styles.terminalDot} />
+                <Text style={styles.terminalText}>Terminal #04</Text>
+              </View>
+            </View>
+
+            <TouchableOpacity style={styles.signInBtn} onPress={handleLogin} activeOpacity={0.9}>
+              <Text style={styles.signInBtnText}>Sign in →</Text>
+            </TouchableOpacity>
+
+            <View style={styles.quickAccessRow}>
+              <Text style={styles.quickAccessLabel}>Quick Operator Access:</Text>
+              <TouchableOpacity style={styles.quickAccessBtn}>
+                <Text style={styles.quickAccessBtnIcon}>👆</Text>
+                <Text style={styles.quickAccessBtnText}>Touch ID</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.quickAccessBtn}>
+                <Text style={styles.quickAccessBtnIcon}>🙂</Text>
+                <Text style={styles.quickAccessBtnText}>Face ID</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Footer */}
+          <View style={styles.footer}>
+            <Text style={{ fontFamily: fonts.sans, fontSize: 14, color: '#9CA3AF', marginBottom: 12 }}>
+              Don't have an account? <Text style={{ color: '#06B6D4', fontFamily: fonts.sansMd }} onPress={() => router.push('/signup')}>Sign up</Text>
+            </Text>
+            <Text style={styles.demoText}>
+              Demo mode: any valid email and 6+ character password works.
+            </Text>
+            <View style={styles.footerLinksRow}>
+              <TouchableOpacity><Text style={styles.footerLink}>Register Scanner</Text></TouchableOpacity>
+              <Text style={styles.footerDot}>·</Text>
+              <TouchableOpacity><Text style={styles.footerLink}>Sensor Calibration</Text></TouchableOpacity>
+              <Text style={styles.footerDot}>·</Text>
+              <TouchableOpacity><Text style={styles.footerLink}>Support</Text></TouchableOpacity>
+            </View>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -133,192 +148,264 @@ export default function Index() {
 const styles = StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: colors.background,
+    backgroundColor: '#0A0D14', // Very dark background matching the design
   },
-  scroll: {
-    paddingHorizontal: 16,
-    paddingBottom: 32,
-    gap: 16,
-  },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingTop: 8,
-  },
-  brandRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
+  keyboardView: {
     flex: 1,
   },
-  logoMark: {
-    width: 40,
-    height: 40,
+  scroll: {
+    paddingHorizontal: 24,
+    paddingTop: 40,
+    paddingBottom: 32,
+    alignItems: 'center',
+  },
+  logoContainer: {
+    alignItems: 'center',
+    marginBottom: 24,
+  },
+  // Custom logo recreation using concentric borders
+  logoOuterRing: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    borderWidth: 10,
+    borderColor: '#3B82F6', // Using solid blue as fallback for gradient ring
+    borderTopColor: '#F59E0B',
+    borderRightColor: '#EF4444',
+    borderBottomColor: '#8B5CF6',
+    borderLeftColor: '#06B6D4',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logoDotIndicator: {
+    position: 'absolute',
+    top: 10,
+    left: 10,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 2,
+    borderColor: '#0A0D14',
+  },
+  logoInnerCircle: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: '#1E293B',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logoCore: {
+    width: 16,
+    height: 16,
     borderRadius: 8,
-    backgroundColor: colors.surfaceContainerHigh,
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    padding: 6,
-    gap: 3,
-    alignContent: 'center',
-    justifyContent: 'center',
+    backgroundColor: '#FFFFFF',
   },
-  logoDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-  },
-  brandTitle: {
-    fontFamily: fonts.sansBold,
-    fontSize: 16,
-    color: colors.onSurface,
-    letterSpacing: 0.4,
-  },
-  brandSub: {
-    fontFamily: fonts.mono,
-    fontSize: 10,
-    color: colors.primary,
-    letterSpacing: 1.2,
-    marginTop: 2,
-  },
-  iconBtn: {
-    width: 48,
-    height: 48,
-    borderRadius: 12,
-    backgroundColor: colors.surfaceContainer,
+  headerTextContainer: {
     alignItems: 'center',
-    justifyContent: 'center',
+    marginBottom: 32,
   },
-  iconBtnGlyph: {
-    fontSize: 22,
-    color: colors.onSurfaceVariant,
-  },
-  hero: {
-    fontFamily: fonts.sans,
-    fontSize: 14,
-    lineHeight: 20,
-    color: colors.onSurfaceVariant,
-  },
-  galleryHint: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    color: colors.muted,
-  },
-  card: {
-    backgroundColor: colors.surfaceContainer,
-    borderRadius: 12,
-    padding: 16,
-    gap: 12,
-  },
-  cardHead: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  cardLabel: {
-    fontFamily: fonts.monoSemi,
-    fontSize: 12,
-    color: colors.onSurface,
-    letterSpacing: 1,
-  },
-  cardMeta: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    color: colors.onSurfaceVariant,
-  },
-  stepper: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: colors.surfaceContainerLowest,
-    borderRadius: 12,
-    padding: 8,
-  },
-  stepBtn: {
-    width: 56,
-    height: 56,
-    borderRadius: 8,
-    backgroundColor: colors.surfaceContainerHigh,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  stepBtnText: {
+  welcomeText: {
     fontFamily: fonts.sansBold,
     fontSize: 28,
-    color: colors.onSurface,
-    lineHeight: 32,
+    color: '#FFFFFF',
+    marginBottom: 8,
+    letterSpacing: -0.5,
   },
-  stepValue: {
-    alignItems: 'center',
-    minWidth: 100,
+  sweepText: {
+    color: '#3B82F6', // Bright blue
   },
-  stepCount: {
-    fontFamily: fonts.monoBold,
-    fontSize: 44,
-    color: colors.primary,
-    lineHeight: 48,
-  },
-  stepCaption: {
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    color: colors.onSurfaceVariant,
-    textTransform: 'uppercase',
-    marginTop: 4,
-  },
-  errorText: {
-    fontFamily: fonts.sansMd,
-    fontSize: 13,
-    color: colors.error,
-    textAlign: 'center',
-  },
-  dayRow: {
-    height: 44,
-    paddingHorizontal: 12,
-    borderRadius: 8,
-    backgroundColor: colors.surfaceContainerLow,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  dayLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
-  dayDot: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-  },
-  dayCode: {
-    fontFamily: fonts.monoSemi,
-    fontSize: 13,
-    color: colors.onSurface,
-    width: 36,
-  },
-  dayName: {
+  subtitle: {
     fontFamily: fonts.sans,
-    fontSize: 12,
+    fontSize: 14,
     color: colors.onSurfaceVariant,
   },
-  dayHex: {
-    fontFamily: fonts.mono,
+  card: {
+    width: '100%',
+    backgroundColor: '#161A23', // Dark navy/grey card
+    borderRadius: 16,
+    padding: 24,
+    gap: 20,
+    borderWidth: 1,
+    borderColor: '#262A36',
+  },
+  inputGroup: {
+    gap: 8,
+  },
+  labelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  label: {
+    fontFamily: fonts.sansBold,
     fontSize: 11,
-    color: colors.onSurfaceVariant,
+    color: '#9CA3AF',
+    letterSpacing: 1,
+    textTransform: 'uppercase',
   },
-  primaryBtn: {
-    height: 56,
-    borderRadius: 12,
-    backgroundColor: colors.primaryContainer,
+  forgotText: {
+    fontFamily: fonts.sansMd,
+    fontSize: 12,
+    color: '#3B82F6',
+  },
+  input: {
+    backgroundColor: '#0A0D14',
+    borderWidth: 1,
+    borderColor: '#262A36',
+    borderRadius: 8,
+    paddingHorizontal: 16,
+    height: 52,
+    color: '#FFFFFF',
+    fontFamily: fonts.sans,
+    fontSize: 15,
+  },
+  passwordContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0A0D14',
+    borderWidth: 1,
+    borderColor: '#262A36',
+    borderRadius: 8,
+    height: 52,
+    paddingHorizontal: 16,
+  },
+  inputPassword: {
+    flex: 1,
+    color: '#FFFFFF',
+    fontFamily: fonts.sans,
+    fontSize: 15,
+  },
+  showBtn: {
+    padding: 8,
+  },
+  showBtnText: {
+    fontFamily: fonts.sansBold,
+    fontSize: 13,
+    color: '#3B82F6',
+  },
+  optionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: -4,
+  },
+  checkboxContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  checkbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    borderWidth: 1.5,
+    borderColor: '#3B82F6',
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 8,
+    backgroundColor: 'transparent',
   },
-  primaryBtnText: {
-    fontFamily: fonts.sansBold,
-    fontSize: 18,
-    color: colors.white,
-    letterSpacing: 0.6,
+  checkboxActive: {
+    backgroundColor: '#3B82F6',
+  },
+  checkIcon: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: 'bold',
+  },
+  checkboxLabel: {
+    fontFamily: fonts.sans,
+    fontSize: 13,
+    color: '#D1D5DB',
+  },
+  terminalStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  terminalDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: colors.primary,
+  },
+  terminalText: {
+    fontFamily: fonts.mono,
+    fontSize: 11,
+    color: colors.primary,
+  },
+  signInBtn: {
+    height: 56,
+    borderRadius: 12,
+    backgroundColor: colors.primaryContainer, // Use theme primary green for login
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 4,
+  },
+  signInBtnText: {
+    fontFamily: fonts.sansMd,
+    fontSize: 16,
+    color: '#003824',
+  },
+  quickAccessRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+    marginTop: 8,
+    flexWrap: 'wrap',
+  },
+  quickAccessLabel: {
+    fontFamily: fonts.sans,
+    fontSize: 12,
+    color: '#9CA3AF',
+    marginRight: 4,
+  },
+  quickAccessBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0A0D14',
+    borderWidth: 1,
+    borderColor: '#262A36',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 6,
+  },
+  quickAccessBtnIcon: {
+    fontSize: 14,
+  },
+  quickAccessBtnText: {
+    fontFamily: fonts.sans,
+    fontSize: 12,
+    color: '#D1D5DB',
+  },
+  footer: {
+    marginTop: 32,
+    alignItems: 'center',
+    gap: 20,
+  },
+  demoText: {
+    fontFamily: fonts.sans,
+    fontSize: 12,
+    color: '#9CA3AF',
+    textAlign: 'center',
+    paddingHorizontal: 20,
+  },
+  footerLinksRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 12,
+  },
+  footerLink: {
+    fontFamily: fonts.sans,
+    fontSize: 12,
+    color: '#9CA3AF',
+  },
+  footerDot: {
+    color: '#4B5563',
+    fontSize: 16,
   },
 });

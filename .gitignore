@@ -42,4 +42,13 @@ example
 /ios
 /android
 
+# YOLO / TFLite weights — keep out of git; ship on-device only (never commit)
 *.tflite
+
+# Android machine-specific config (never commit)
+android/local.properties
+
+# Native module builds (never commit caches)
+modules/*/android/build/
+modules/*/ios/build/
+build/
