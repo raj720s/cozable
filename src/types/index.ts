@@ -22,13 +22,14 @@ export const DAY_COLOUR_HEX: Record<DayColour, string> = {
   Blue: '#2563EB',
   Yellow: '#EAB308',
   Red: '#DC2626',
-  Brown: '#92400E',
+  Brown: '#854D0E',
   Green: '#16A34A',
   Orange: '#EA580C',
-  Black: '#111827',
+  Black: '#1E293B',
 };
 
-export const CONFIDENCE_THRESHOLD = 0.6;
+/** Summary / audit verification threshold (stitch designs use 85%). */
+export const CONFIDENCE_THRESHOLD = 0.85;
 
 /** Live/gallery MobileNet results lock once score reaches this. */
 export const CLASSIFY_LOCK_SCORE = 0.5;
@@ -58,6 +59,17 @@ export interface CaptureMedia {
 /** Soft cap for gallery memory — oldest captures are pruned first. */
 export const MAX_GALLERY_ITEMS = 20;
 
+/** Normalized YOLO box persisted with gallery captures. */
+export interface StoredYoloDetection {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  classId: number;
+  confidence: number;
+  label: string;
+}
+
 export interface StoredClassification {
   index: number;
   label: string;
@@ -73,8 +85,10 @@ export interface GalleryItem {
   detections: TrayDetection[];
   expectedCount: number;
   createdAt: number;
-  /** MobileNet ImageNet result when classified. */
+  /** Top-class summary when YOLO ran on this capture. */
   classification?: StoredClassification;
+  /** Full YOLO boxes for this capture (normalized 0..1). */
+  yoloDetections?: StoredYoloDetection[];
 }
 
 export interface PredictionLogEntry {

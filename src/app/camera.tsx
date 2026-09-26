@@ -1,21 +1,11 @@
-import { useAppModel } from '@/ml/ModelProvider';
+import { useAppModel, type YoloDetection } from '@/ml/ModelProvider';
 import {
   EMPTY_PREDICTION,
   type ClassificationResult,
-} from '@/ml/classifyFrame';
-import { renderYoloFrame } from '@/ml/skiaYoloOverlay';
-import type { SkiaFrameRender } from '@/ml/skiaClassifierOverlay';
-import {
-  smoothDetections,
-  type YoloDetection,
-} from '@/ml/yoloDecode';
-import {
-  copyFrameForYolo,
-  prepareYoloInputFromCopy,
-  runYoloDetect,
-  type YoloFrameCopy,
-} from '@/ml/yoloRun';
+} from '@/ml/prediction';
+import { useTensorDebug } from '@/ml/useTensorDebug';
 import { useScanStore } from '@/store/scanStore';
+import { CLASS_COLORS_BY_ID, colors, fonts } from '@/theme/scanner';
 import { useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -26,32 +16,42 @@ import {
   StyleSheet,
   Text,
   TouchableOpacity,
+  useWindowDimensions,
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
+  Camera,
   CommonResolutions,
   useCameraDevice,
   useCameraPermission,
+  useFrameOutput,
   useMicrophonePermission,
   usePhotoOutput,
   useVideoOutput,
+  type CameraRef,
   type FlashMode,
   type Frame,
   type Photo,
   type Recorder,
   type TorchMode,
 } from 'react-native-vision-camera';
-import {
-  SkiaCamera,
-  type SkiaCameraRef,
-} from 'react-native-vision-camera-skia';
 import { createSynchronizable, scheduleOnRN } from 'react-native-worklets';
 
-/** YOLO is heavier than MobileNet crops — ~5–10 Hz at 30 fps. */
-const INFER_EVERY_N_FRAMES = 6;
+/** Cap live YOLO to ~10 Hz (VisionCamera v5 has no runAtTargetFps helper). */
+const INFER_INTERVAL_MS = 100;
+
+/** Inference-only frame size — preview stays full quality via Camera view. */
+const INFER_RESOLUTION = { width: 320, height: 240 };
 
 const EMPTY_DETECTIONS: YoloDetection[] = [];
+
+const CLASS_COLORS = CLASS_COLORS_BY_ID;
+
+function toFileUri(path: string): string {
+  if (path.startsWith('file://') || path.startsWith('content://')) return path;
+  return `file://${path}`;
+}
 
 function topDetectionAsPrediction(
   dets: YoloDetection[],
@@ -66,20 +66,13 @@ function topDetectionAsPrediction(
   };
 }
 
-type FrameStats = {
-  count: number;
+type FramePixelPacket = {
+  pixels: Uint8Array;
   width: number;
   height: number;
-  pixelFormat: string;
-  dropped: number;
-};
-
-const EMPTY_FRAME_STATS: FrameStats = {
-  count: 0,
-  width: 0,
-  height: 0,
-  pixelFormat: '—',
-  dropped: 0,
+  stride: number;
+  channels: number;
+  isBgra: boolean;
 };
 
 function isBenignCameraError(error: Error): boolean {
@@ -98,6 +91,9 @@ function nextFlashMode(mode: FlashMode): FlashMode {
 }
 
 export default function CameraScreen() {
+  // Temporary: confirm day-colour model shapes in Metro (AGENTS.md)
+  useTensorDebug();
+
   const router = useRouter();
   const params = useLocalSearchParams();
   const expectedCountParam = parseInt(params.expectedCount as string, 10);
@@ -105,13 +101,10 @@ export default function CameraScreen() {
 
   const setExpectedCount = useScanStore((s) => s.setExpectedCount);
   const expectedCount = useScanStore((s) => s.expectedCount);
-  const confirmedCount = useScanStore((s) => s.detections.length);
   const completeCapture = useScanStore((s) => s.completeCapture);
   const startScan = useScanStore((s) => s.startScan);
   const stopScan = useScanStore((s) => s.stopScan);
-  const galleryCount = useScanStore((s) => s.gallery.length);
   const logPrediction = useScanStore((s) => s.logPrediction);
-  const predictionLogCount = useScanStore((s) => s.predictionLog.length);
 
   const {
     hasPermission: hasCameraPermission,
@@ -125,7 +118,12 @@ export default function CameraScreen() {
     canRequestPermission: canRequestMic,
   } = useMicrophonePermission();
 
-  const { state: modelState, model } = useAppModel();
+  const { state: modelState, isLoaded, detectImageUri, detectRgb, annotateImageUri } =
+    useAppModel();
+
+  useEffect(() => {
+    console.log('[CAM] mounted, model loaded:', isLoaded, 'state:', modelState);
+  }, [isLoaded, modelState]);
 
   const [appActive, setAppActive] = useState(AppState.currentState === 'active');
   const [cameraPosition, setCameraPosition] = useState<'back' | 'front'>('back');
@@ -137,135 +135,172 @@ export default function CameraScreen() {
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [zoomLabel, setZoomLabel] = useState('1.0');
   const [capturing, setCapturing] = useState(false);
-  const [frameStats, setFrameStats] = useState<FrameStats>(EMPTY_FRAME_STATS);
+  const [frameCount, setFrameCount] = useState(0);
   const [prediction, setPrediction] = useState<ClassificationResult>(EMPTY_PREDICTION);
-  const [detectionCount, setDetectionCount] = useState(0);
+  const [detections, setDetections] = useState<YoloDetection[]>(EMPTY_DETECTIONS);
   const predictionRef = useRef(prediction);
+  const detectionsRef = useRef<YoloDetection[]>(EMPTY_DETECTIONS);
+  // Live frame dimensions from the camera. Updated per inference (ref, not state,
+  // to avoid re-render churn). Default matches INFER_RESOLUTION.
+  const frameDimsRef = useRef({ w: INFER_RESOLUTION.width, h: INFER_RESOLUTION.height });
+  /** Preview layout inside SafeAreaView (excludes status/home black bars). */
+  const [previewSize, setPreviewSize] = useState({ width: 0, height: 0 });
+  const { width: windowW, height: windowH } = useWindowDimensions();
+  const previewW = previewSize.width > 0 ? previewSize.width : windowW;
+  const previewH = previewSize.height > 0 ? previewSize.height : windowH;
+
+  useEffect(() => {
+    console.log('[RENDER] overlay', detections.length, 'boxes');
+    detections.slice(0, 3).forEach((d, i) => {
+      console.log('[RENDER] box', i, d.label, d.confidence.toFixed(3), d);
+    });
+  }, [detections]);
 
   const device = useCameraDevice(cameraPosition);
-  const photoOutput = usePhotoOutput({ qualityPrioritization: 'balanced' });
+  const photoOutput = usePhotoOutput({
+    qualityPrioritization: 'balanced',
+    targetResolution: CommonResolutions.HD_4_3,
+  });
   const videoOutput = useVideoOutput({ enableAudio: true });
-  const cameraRef = useRef<SkiaCameraRef>(null);
+  const cameraRef = useRef<CameraRef>(null);
   const recorderRef = useRef<Recorder | null>(null);
-  /** Cross-runtime frame counter for the SkiaCamera onFrame worklet. */
   const frameCounter = useMemo(() => createSynchronizable(0), []);
-  /** Latest YOLO boxes shared with the Skia draw path. */
-  const latestDetections = useMemo(
-    () => createSynchronizable<YoloDetection[]>(EMPTY_DETECTIONS),
-    [],
-  );
-  /**
-   * Worklet-safe busy flag. Do not call AsyncRunner.isBusy() from SkiaCamera's
-   * onFrame — that runtime cannot synchronously invoke Remote Functions.
-   */
+  /** Worklet-safe busy flag — never call native isBusy from the frame thread. */
   const mlBusy = useMemo(() => createSynchronizable(false), []);
-
-  const reportFrameStats = useCallback(
-    (count: number, width: number, height: number, pixelFormat: string) => {
-      setFrameStats((prev) => ({
-        ...prev,
-        count,
-        width,
-        height,
-        pixelFormat,
-      }));
-    },
-    [],
-  );
+  /** Last inference timestamp (ms) for FPS throttle. */
+  const lastInferAt = useMemo(() => createSynchronizable(0), []);
 
   const reportDetections = useCallback((dets: YoloDetection[]) => {
     const next = topDetectionAsPrediction(dets);
     predictionRef.current = next;
-    setDetectionCount(dets.length);
+    detectionsRef.current = dets;
+    setDetections(dets);
     setPrediction(next);
   }, []);
 
-  /** Runs on the RN JS thread: letterbox + YOLO (worklet only copied pixels). */
-  const runYoloOnJS = useCallback(
-    (copy: YoloFrameCopy) => {
-      if (model == null) {
+  const reportFrameCount = useCallback((count: number) => {
+    setFrameCount(count);
+    console.log('[FRAME] count', count);
+  }, []);
+
+  const runDetectRgbOnJS = useCallback(
+    (packet: FramePixelPacket) => {
+      if (!isLoaded) {
         mlBusy.setBlocking(false);
         return;
       }
-      try {
-        const prepared = prepareYoloInputFromCopy(copy);
-        const raw = runYoloDetect(model, prepared);
-        const previous = latestDetections.getDirty();
-        const smoothed = smoothDetections(previous, raw);
-        latestDetections.setBlocking(smoothed);
-        reportDetections(smoothed);
-
-        const top = smoothed[0];
-        if (top != null) {
-          const prevTop = previous[0];
-          const shouldLog =
-            prevTop == null ||
-            prevTop.classId !== top.classId ||
-            Math.abs(prevTop.confidence - top.confidence) >= 0.08;
-          if (shouldLog) {
-            logPrediction(topDetectionAsPrediction(smoothed), 'live', false);
+      void (async () => {
+        try {
+          // Record actual frame dims for coordinate mapping
+          frameDimsRef.current = { w: packet.width, h: packet.height };
+          const dets = await detectRgb(
+            packet.pixels,
+            packet.width,
+            packet.height,
+            packet.stride,
+            packet.channels,
+            packet.isBgra,
+          );
+          console.log(
+            '[LIVE] detectRgb →',
+            dets.length,
+            dets[0] ?? null,
+            `${packet.width}x${packet.height}`,
+          );
+          console.log('[DETECT] count:', dets.length);
+          dets.slice(0, 3).forEach((d) => console.log('[DETECT] box:', d));
+          reportDetections(dets);
+          const top = dets[0];
+          if (top != null) {
+            const prev = predictionRef.current;
+            if (
+              prev.index !== top.classId ||
+              Math.abs(prev.score - top.confidence) >= 0.1
+            ) {
+              logPrediction(topDetectionAsPrediction(dets), 'live', false);
+            }
           }
+        } catch (error) {
+          console.warn('Native YOLO frame detect failed', error);
+        } finally {
+          mlBusy.setBlocking(false);
         }
-      } catch (error) {
-        console.warn('YOLO inference failed', error);
-      } finally {
-        mlBusy.setBlocking(false);
-      }
+      })();
     },
-    [latestDetections, logPrediction, mlBusy, model, reportDetections],
+    [detectRgb, isLoaded, logPrediction, mlBusy, reportDetections],
   );
 
-  const onSkiaFrame = useCallback(
-    (frame: Frame, render: SkiaFrameRender) => {
+  const onFrame = useCallback(
+    (frame: Frame) => {
       'worklet';
       const next = frameCounter.getDirty() + 1;
       frameCounter.setBlocking(next);
 
-      // 1) Always paint first with last known boxes — never stall Skia on ML.
-      renderYoloFrame(render, latestDetections.getDirty());
+      if (next % 30 === 0) {
+        scheduleOnRN(reportFrameCount, next);
+      }
 
-      // 2) Claim busy BEFORE copying so concurrent frames cannot double-invoke.
-      let copy: YoloFrameCopy | null = null;
+      let packet: FramePixelPacket | null = null;
+      const now = Date.now();
+      const due = now - lastInferAt.getDirty() >= INFER_INTERVAL_MS;
       if (
-        model != null &&
-        next % INFER_EVERY_N_FRAMES === 0 &&
+        due &&
         !mlBusy.getDirty() &&
-        frame.hasPixelBuffer
+        frame.hasPixelBuffer &&
+        frame.width > 0
       ) {
-        mlBusy.setBlocking(true);
-        copy = copyFrameForYolo(frame);
-        if (copy == null) {
-          mlBusy.setBlocking(false);
-        }
+        const width = frame.width;
+        const height = frame.height;
+        const stride = Math.max(frame.bytesPerRow, width * 3);
+        const format = String(frame.pixelFormat);
+        const isBgra = format.includes('bgra');
+        const channels = stride >= width * 4 ? 4 : 3;
+        // Single copy — buffer is invalidated when Frame is disposed.
+        // True AHardwareBuffer zero-copy needs a native HybridObject; Expo
+        // still marshals Uint8Array → ByteArray once across the bridge.
+        packet = {
+          pixels: new Uint8Array(frame.getPixelBuffer()),
+          width,
+          height,
+          stride,
+          channels,
+          isBgra,
+        };
+        lastInferAt.setBlocking(now);
       }
 
-      if (next % 20 === 0) {
-        scheduleOnRN(
-          reportFrameStats,
-          next,
-          frame.width,
-          frame.height,
-          String(frame.pixelFormat),
-        );
-      }
-
-      // 3) Frame is done for preview — release before heavy ML on JS.
       frame.dispose();
 
-      // 4) Letterbox + detect on the RN thread.
-      if (copy != null) {
-        scheduleOnRN(runYoloOnJS, copy);
+      if (packet != null) {
+        mlBusy.setBlocking(true);
+        scheduleOnRN(runDetectRgbOnJS, packet);
       }
     },
-    [
-      frameCounter,
-      latestDetections,
-      mlBusy,
-      model,
-      reportFrameStats,
-      runYoloOnJS,
-    ],
+    [frameCounter, lastInferAt, mlBusy, reportFrameCount, runDetectRgbOnJS],
   );
+
+  const frameOutput = useFrameOutput({
+    // LiteRT converts YUV→RGB internally; deliver RGB from the camera pipeline.
+    pixelFormat: 'rgb',
+    // Decouple from preview: smaller buffers for ML only.
+    targetResolution: INFER_RESOLUTION,
+    enablePreviewSizedOutputBuffers: false,
+    enablePhysicalBufferRotation: true,
+    dropFramesWhileBusy: true,
+    onFrame,
+  });
+
+  const outputs = useMemo(
+    () => [photoOutput, videoOutput, frameOutput],
+    [photoOutput, videoOutput, frameOutput],
+  );
+
+  const isActive =
+    hasCameraPermission &&
+    isFocused &&
+    appActive &&
+    Boolean(device) &&
+    sessionError == null;
 
   useEffect(() => {
     if (!Number.isNaN(expectedCountParam) && expectedCountParam > 0) {
@@ -285,12 +320,6 @@ export default function CameraScreen() {
     });
     return () => sub.remove();
   }, []);
-
-  useEffect(() => {
-    if (cameraPosition === 'front' || !device?.hasTorch) {
-      setTorchMode('off');
-    }
-  }, [cameraPosition, device?.hasTorch]);
 
   const openPermissionSettings = useCallback(() => {
     Alert.alert(
@@ -332,15 +361,6 @@ export default function CameraScreen() {
     requestCameraPermission,
     requestMicPermission,
   ]);
-
-  const outputs = useMemo(() => [photoOutput, videoOutput], [photoOutput, videoOutput]);
-
-  const isActive =
-    hasCameraPermission &&
-    isFocused &&
-    appActive &&
-    Boolean(device) &&
-    sessionError == null;
 
   const handleSessionError = useCallback((error: Error) => {
     if (isBenignCameraError(error)) {
@@ -398,17 +418,42 @@ export default function CameraScreen() {
       const height = photo.height;
       photo.dispose();
 
-      const snapPrediction = predictionRef.current;
+      const uri = toFileUri(path);
+      // Fresh detect on the saved photo so boxes match the gallery image.
+      let dets: YoloDetection[] = [];
+      if (isLoaded) {
+        try {
+          dets = await detectImageUri(uri);
+        } catch (error) {
+          console.warn('SNAP detect failed — using live boxes', error);
+          dets = detectionsRef.current;
+        }
+      } else {
+        dets = detectionsRef.current;
+      }
+
+      let savePath = path;
+      if (dets.length > 0) {
+        try {
+          const annotated = await annotateImageUri(uri, dets);
+          savePath = annotated;
+        } catch (error) {
+          console.warn('Annotate SNAP failed — saving raw photo', error);
+        }
+      }
+
+      const snapPrediction = topDetectionAsPrediction(dets);
       await completeCapture(
         {
           kind: 'photo',
-          path,
+          path: savePath,
           width,
           height,
           capturedAt: Date.now(),
         },
         expectedCount,
         snapPrediction.index >= 0 ? snapPrediction : null,
+        dets.length > 0 ? dets : null,
       );
 
       router.replace({
@@ -467,7 +512,9 @@ export default function CameraScreen() {
           recorderRef.current = null;
           setTorchMode('off');
           void (async () => {
-            const snapPrediction = predictionRef.current;
+            // Video file itself is never run through YOLO — only attach last live boxes.
+            const liveDets = detectionsRef.current;
+            const snapPrediction = topDetectionAsPrediction(liveDets);
             await completeCapture(
               {
                 kind: 'video',
@@ -476,6 +523,7 @@ export default function CameraScreen() {
               },
               expectedCount,
               snapPrediction.index >= 0 ? snapPrediction : null,
+              liveDets.length > 0 ? liveDets : null,
             );
             router.replace({
               pathname: '/summary',
@@ -580,145 +628,214 @@ export default function CameraScreen() {
 
   const modelStatusLabel =
     modelState === 'loaded'
-      ? 'YOLOv8n live'
+      ? 'YOLOv8n live frames'
       : modelState === 'error'
         ? 'Model failed'
         : 'Loading model…';
 
   const frameMetaLabel =
-    frameStats.count > 0
-      ? `Skia #${frameStats.count} · ${frameStats.width}×${frameStats.height} · ${frameStats.pixelFormat}`
-      : 'SkiaCamera waiting for frames…';
+    frameCount > 0
+      ? `Frame #${frameCount} · ${detections.length} box${detections.length === 1 ? '' : 'es'}`
+      : 'Waiting for camera frames…';
 
   const predictionLabel =
     prediction.index >= 0
-      ? `${prediction.label}  ${(prediction.score * 100).toFixed(0)}% · ${detectionCount} box${detectionCount === 1 ? '' : 'es'}`
-      : detectionCount > 0
-        ? `${detectionCount} detections`
-        : 'Point camera at COCO objects…';
-
-  const flashLabel =
-    flashMode === 'off' ? 'Flash Off' : flashMode === 'on' ? 'Flash On' : 'Flash Auto';
+      ? `${prediction.label}  ${(prediction.score * 100).toFixed(0)}%`
+      : 'Point camera at day-colour tray labels…';
 
   return (
     <View style={styles.container}>
-      <SkiaCamera
-        ref={cameraRef}
-        style={StyleSheet.absoluteFill}
-        device={device}
-        isActive={isActive}
-        outputs={outputs}
-        torchMode={torchMode}
-        pixelFormat="rgb"
-        enablePreviewSizedOutputBuffers
-        targetResolution={CommonResolutions.VGA_4_3}
-        onFrame={onSkiaFrame}
-        getInitialZoom={() => device.minZoom ?? 1}
-        onStarted={() => {
-          frameCounter.setBlocking(0);
-          latestDetections.setBlocking(EMPTY_DETECTIONS);
-          setFrameStats(EMPTY_FRAME_STATS);
-          setPrediction(EMPTY_PREDICTION);
-          setDetectionCount(0);
-          setCameraStarted(true);
-          setSessionError(null);
-          setZoomLabel((device.minZoom ?? 1).toFixed(1));
-        }}
-        onStopped={() => setCameraStarted(false)}
-        onError={handleSessionError}
-      />
+      {/*
+        Safe area keeps Camera + YOLO overlay out of status/home black bars.
+        Those insets stay pure black and are never part of the frame buffer
+        used for detectRgb / overlay mapping.
+      */}
+      <SafeAreaView style={styles.safePreview} edges={['top', 'bottom']}>
+        <View
+          style={styles.previewFrame}
+          onLayout={(e) => {
+            const { width, height } = e.nativeEvent.layout;
+            setPreviewSize({ width, height });
+          }}
+        >
+          <Camera
+            resizeMode="contain"
+            ref={cameraRef}
+            style={StyleSheet.absoluteFill}
+            device={device}
+            isActive={isActive}
+            outputs={outputs}
+            torchMode={torchMode}
+            enableNativeZoomGesture
+            onStarted={() => {
+              frameCounter.setBlocking(0);
+              setPrediction(EMPTY_PREDICTION);
+              setDetections(EMPTY_DETECTIONS);
+              setFrameCount(0);
+              setCameraStarted(true);
+              setSessionError(null);
+              setZoomLabel((device.minZoom ?? 1).toFixed(1));
+            }}
+            onStopped={() => setCameraStarted(false)}
+            onError={handleSessionError}
+          />
 
-      <SafeAreaView style={styles.overlayContainer} pointerEvents="box-none">
-        <View style={styles.topRow}>
-          <TouchableOpacity style={styles.iconButton} onPress={() => router.back()}>
-            <Text style={styles.iconText}>Back</Text>
-          </TouchableOpacity>
+          {/* YOLO live overlay — frame-normalized → preview-pixel transform */}
+          <View style={styles.yoloOverlayRoot} pointerEvents="none">
+            {detections.map((d, i) => {
+              const { w: FW, h: FH } = frameDimsRef.current;
+              const isFront = cameraPosition === 'front';
+              // Camera uses resizeMode="contain" — letterbox inside previewFrame
+              const scale = Math.min(previewW / FW, previewH / FH);
+              const scaledW = FW * scale;
+              const scaledH = FH * scale;
+              const offsetX = (previewW - scaledW) / 2;
+              const offsetY = (previewH - scaledH) / 2;
 
-          <View style={styles.topActions}>
-            <TouchableOpacity
-              style={styles.iconButton}
-              onPress={() => router.push('/gallery')}
-            >
-              <Text style={styles.iconText}>
-                Gallery{galleryCount > 0 ? ` (${galleryCount})` : ''}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.iconButton} onPress={toggleFlash}>
-              <Text style={styles.iconText}>{flashLabel}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[
-                styles.iconButton,
-                torchMode === 'on' && styles.iconButtonActive,
-                (!device.hasTorch || cameraPosition === 'front') && styles.iconButtonDisabled,
-              ]}
-              onPress={toggleTorch}
-            >
-              <Text style={styles.iconText}>{torchMode === 'on' ? 'Torch On' : 'Torch'}</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.iconButton} onPress={toggleCameraPosition}>
-              <Text style={styles.iconText}>Flip</Text>
-            </TouchableOpacity>
+              const w = d.width * scaledW;
+              const h = d.height * scaledH;
+
+              let left = d.x * scaledW + offsetX;
+              const top = d.y * scaledH + offsetY;
+
+              if (isFront) {
+                left = previewW - left - w;
+              }
+
+              const drawW = Math.max(w, 60);
+              const drawH = Math.max(h, 30);
+              const color = CLASS_COLORS[d.classId] ?? '#00FF00';
+
+              return (
+                <View
+                  key={i}
+                  pointerEvents="none"
+                  style={{
+                    position: 'absolute',
+                    left,
+                    top,
+                    width: drawW,
+                    height: drawH,
+                    borderWidth: 3,
+                    borderColor: color,
+                    backgroundColor: 'transparent',
+                    zIndex: 999,
+                  }}
+                >
+                  <View
+                    style={{
+                      position: 'absolute',
+                      top: -22,
+                      left: 0,
+                      backgroundColor: color,
+                      paddingHorizontal: 6,
+                      paddingVertical: 2,
+                      borderRadius: 3,
+                    }}
+                  >
+                    <Text
+                      style={{ color: '#FFFFFF', fontSize: 14, fontWeight: 'bold' }}
+                      numberOfLines={1}
+                    >
+                      {d.label} {(d.confidence * 100).toFixed(1)}%
+                    </Text>
+                  </View>
+                </View>
+              );
+            })}
           </View>
-        </View>
 
-        <View style={styles.midRow} pointerEvents="box-none">
-          <View style={styles.detectionCard}>
-            <View style={styles.modelRow}>
-              {!cameraStarted || modelState === 'loading' ? (
-                <ActivityIndicator color="#fff" size="small" />
-              ) : null}
-              <Text style={styles.modelStatus}>
-                {!cameraStarted ? 'Starting camera…' : modelStatusLabel}
-              </Text>
-              <Text style={styles.coverage}>
-                {confirmedCount}/{expectedCount}
-              </Text>
+          <View style={styles.overlayContainer} pointerEvents="box-none">
+            <View style={styles.topRow}>
+              <View style={styles.topLeft}>
+                <TouchableOpacity style={styles.hudIcon} onPress={() => router.back()}>
+                  <Text style={styles.hudIconText}>←</Text>
+                </TouchableOpacity>
+                <View style={styles.scanBadge}>
+                  <Text style={styles.scanBadgeText}>Scan #01</Text>
+                </View>
+              </View>
+
+              <View style={styles.detectPill}>
+                <View style={styles.detectDot} />
+                <Text style={styles.detectPillText}>
+                  {detections.length} / {expectedCount} DETECTED
+                </Text>
+              </View>
+
+              <View style={styles.topActions}>
+                <TouchableOpacity
+                  style={[
+                    styles.hudIcon,
+                    torchMode === 'on' && styles.hudIconActive,
+                    (!device.hasTorch || cameraPosition === 'front') &&
+                      styles.hudIconDisabled,
+                  ]}
+                  onPress={toggleTorch}
+                >
+                  <Text style={styles.hudIconText}>{torchMode === 'on' ? '✦' : '✧'}</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.hudIcon}
+                  onPress={() => router.push('/gallery')}
+                >
+                  <Text style={styles.hudIconText}>⚙</Text>
+                </TouchableOpacity>
+              </View>
             </View>
 
-            <Text style={styles.detectionMeta}>{frameMetaLabel}</Text>
-            <Text style={styles.predictionText}>{predictionLabel}</Text>
-            <Text style={styles.detectionMeta}>
-              Throttled YOLO · log {predictionLogCount}
-            </Text>
-          </View>
+            <View style={styles.midRow} pointerEvents="box-none">
+              <View style={styles.detectionCard}>
+                <View style={styles.modelRow}>
+                  {!cameraStarted || modelState === 'loading' ? (
+                    <ActivityIndicator color={colors.primary} size="small" />
+                  ) : null}
+                  <Text style={styles.modelStatus}>
+                    {!cameraStarted ? 'Starting camera…' : modelStatusLabel}
+                  </Text>
+                </View>
+                <Text style={styles.detectionMeta}>{frameMetaLabel}</Text>
+                <Text style={styles.predictionText}>{predictionLabel}</Text>
+              </View>
+            </View>
 
-          <View style={styles.zoomContainer}>
-            <TouchableOpacity style={styles.zoomButton} onPress={() => handleZoom('in')}>
-              <Text style={styles.zoomText}>+</Text>
+            {detections.some((d) => d.confidence < 0.85) ? (
+              <View style={styles.attentionBar}>
+                <Text style={styles.attentionText}>
+                  Low-confidence label — pan closer or SNAP for a still capture.
+                </Text>
+              </View>
+            ) : null}
+
+            <View style={styles.bottomRow}>
+              <TouchableOpacity style={styles.utilityBtn} onPress={toggleFlash}>
+                <Text style={styles.utilityBtnText}>
+                  {flashMode === 'off' ? '⚡' : '⚡+'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.stopScanBtn, capturing && styles.disabled]}
+                onPress={() => void handleCapturePhoto()}
+                disabled={capturing}
+              >
+                <Text style={styles.stopScanText}>
+                  {capturing ? 'CAPTURING…' : 'SNAP & REVIEW'}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.utilityBtn, isRecording && styles.utilityBtnRec]}
+                onPress={() => void handleToggleRecording()}
+              >
+                <View style={isRecording ? styles.stopSquare : styles.recordCircle} />
+              </TouchableOpacity>
+            </View>
+
+            <TouchableOpacity style={styles.doneLink} onPress={handleFinish}>
+              <Text style={styles.doneLinkText}>STOP SCAN · DONE</Text>
             </TouchableOpacity>
-            <Text style={styles.zoomLabel}>{zoomLabel}x</Text>
-            <TouchableOpacity style={styles.zoomButton} onPress={() => handleZoom('out')}>
-              <Text style={styles.zoomText}>-</Text>
-            </TouchableOpacity>
           </View>
-        </View>
-
-        <View style={styles.bottomRow}>
-          <TouchableOpacity style={styles.finishButton} onPress={handleFinish}>
-            <Text style={styles.finishButtonText}>Done</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.shutterButton, styles.photoShutter, capturing && styles.disabled]}
-            onPress={() => void handleCapturePhoto()}
-            disabled={capturing}
-          >
-            <Text style={styles.shutterLabel}>{capturing ? '…' : 'SNAP'}</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[
-              styles.shutterButton,
-              isRecording ? styles.recordingActive : styles.videoShutter,
-            ]}
-            onPress={() => void handleToggleRecording()}
-          >
-            <View style={isRecording ? styles.stopSquare : styles.recordCircle} />
-            <Text style={[styles.shutterLabel, isRecording && styles.shutterLabelLight]}>
-              {isRecording ? 'STOP' : 'REC'}
-            </Text>
-          </TouchableOpacity>
         </View>
       </SafeAreaView>
     </View>
@@ -729,6 +846,24 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#000000',
+  },
+  safePreview: {
+    flex: 1,
+    backgroundColor: '#000000',
+  },
+  previewFrame: {
+    flex: 1,
+    backgroundColor: '#000000',
+    overflow: 'hidden',
+  },
+  /** Full-bleed YOLO boxes over Camera preview. */
+  yoloOverlayRoot: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 999,
   },
   fallbackContainer: {
     flex: 1,
@@ -773,42 +908,87 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   overlayContainer: {
-    flex: 1,
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
     justifyContent: 'space-between',
     padding: 16,
+    zIndex: 1000,
   },
   topRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'flex-start',
+    alignItems: 'center',
+    gap: 8,
+  },
+  topLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 8,
   },
   topActions: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'flex-end',
     gap: 8,
-    flex: 1,
   },
-  iconButton: {
-    backgroundColor: 'rgba(0, 0, 0, 0.6)',
-    paddingVertical: 10,
-    paddingHorizontal: 14,
-    borderRadius: 20,
+  hudIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: 'rgba(18, 19, 22, 0.72)',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.2)',
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  iconButtonActive: {
-    borderColor: '#FBBF24',
-    backgroundColor: 'rgba(251, 191, 36, 0.25)',
+  hudIconActive: {
+    borderColor: colors.warning,
+    backgroundColor: 'rgba(245, 158, 11, 0.25)',
   },
-  iconButtonDisabled: {
-    opacity: 0.45,
+  hudIconDisabled: {
+    opacity: 0.4,
   },
-  iconText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '600',
+  hudIconText: {
+    color: colors.white,
+    fontSize: 18,
+    fontFamily: fonts.sansBold,
+  },
+  scanBadge: {
+    backgroundColor: 'rgba(18, 19, 22, 0.72)',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  scanBadgeText: {
+    fontFamily: fonts.monoSemi,
+    fontSize: 12,
+    color: colors.onSurface,
+  },
+  detectPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(18, 19, 22, 0.8)',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: colors.outlineVariant,
+  },
+  detectDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.primary,
+  },
+  detectPillText: {
+    fontFamily: fonts.monoSemi,
+    fontSize: 11,
+    color: colors.onSurface,
+    letterSpacing: 0.4,
   },
   midRow: {
     flexDirection: 'row',
@@ -817,173 +997,110 @@ const styles = StyleSheet.create({
   },
   detectionCard: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.72)',
+    backgroundColor: 'rgba(26, 28, 32, 0.88)',
     borderRadius: 16,
-    padding: 16,
+    padding: 14,
     borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.18)',
-    gap: 6,
-    minHeight: 120,
-    justifyContent: 'center',
+    borderColor: colors.border,
+    gap: 4,
   },
   modelRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    marginBottom: 4,
   },
   modelStatus: {
-    color: '#93C5FD',
-    fontSize: 12,
-    fontWeight: '600',
-    textTransform: 'uppercase',
+    color: colors.secondary,
+    fontFamily: fonts.mono,
+    fontSize: 11,
     letterSpacing: 0.4,
     flex: 1,
-  },
-  coverage: {
-    color: '#FDE68A',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  detectionLabel: {
-    color: '#FFFFFF',
-    fontSize: 22,
-    fontWeight: '700',
-    textTransform: 'capitalize',
+    textTransform: 'uppercase',
   },
   detectionMeta: {
-    color: '#D1D5DB',
-    fontSize: 13,
-    lineHeight: 18,
+    color: colors.muted,
+    fontFamily: fonts.mono,
+    fontSize: 11,
   },
   predictionText: {
-    color: '#42d77d',
-    fontSize: 18,
-    fontWeight: '800',
-    marginTop: 4,
-    textTransform: 'capitalize',
+    color: colors.primary,
+    fontFamily: fonts.sansBold,
+    fontSize: 16,
+    marginTop: 2,
   },
-  predictionLocked: {
-    color: '#FDE68A',
-  },
-  unlockBtn: {
-    marginTop: 10,
-    alignSelf: 'flex-start',
-    backgroundColor: 'rgba(253, 230, 138, 0.18)',
-    borderColor: '#F59E0B',
-    borderWidth: 1,
-    borderRadius: 16,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  unlockBtnText: {
-    color: '#FDE68A',
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  colorSwatch: {
-    marginTop: 8,
-    height: 10,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: 'rgba(255,255,255,0.35)',
-  },
-  confirmBtn: {
-    marginTop: 10,
-    alignSelf: 'flex-start',
-    backgroundColor: '#2563EB',
+  attentionBar: {
+    backgroundColor: 'rgba(26, 28, 32, 0.92)',
+    borderRadius: 10,
     paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 999,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: colors.warning,
+    marginBottom: 8,
   },
-  confirmBtnText: {
-    color: '#fff',
-    fontWeight: '700',
+  attentionText: {
+    fontFamily: fonts.sans,
     fontSize: 13,
-  },
-  zoomContainer: {
-    backgroundColor: 'rgba(0, 0, 0, 0.65)',
-    borderRadius: 12,
-    padding: 8,
-    alignItems: 'center',
-    gap: 6,
-  },
-  zoomButton: {
-    width: 36,
-    height: 36,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  zoomText: {
-    color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: 'bold',
-  },
-  zoomLabel: {
-    color: '#FFFFFF',
-    fontSize: 11,
-    fontWeight: '700',
+    color: colors.tertiary,
   },
   bottomRow: {
     flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  utilityBtn: {
+    width: 52,
+    height: 56,
+    borderRadius: 12,
+    backgroundColor: 'rgba(26, 28, 32, 0.92)',
+    borderWidth: 1.5,
+    borderColor: colors.border,
+    alignItems: 'center',
     justifyContent: 'center',
+  },
+  utilityBtnRec: {
+    borderColor: colors.error,
+  },
+  utilityBtnText: {
+    fontSize: 18,
+    color: colors.white,
+  },
+  stopScanBtn: {
+    flex: 1,
+    height: 56,
+    borderRadius: 12,
+    backgroundColor: colors.primaryContainer,
     alignItems: 'center',
-    gap: 18,
-    marginBottom: 8,
+    justifyContent: 'center',
   },
-  finishButton: {
-    paddingVertical: 14,
-    paddingHorizontal: 18,
-    borderRadius: 30,
-    backgroundColor: 'rgba(31, 41, 55, 0.9)',
+  stopScanText: {
+    fontFamily: fonts.sansBold,
+    fontSize: 16,
+    color: colors.white,
+    letterSpacing: 0.6,
   },
-  finishButtonText: {
-    color: '#fff',
-    fontWeight: '700',
-    fontSize: 14,
-  },
-  shutterButton: {
-    flexDirection: 'row',
+  doneLink: {
     alignItems: 'center',
-    paddingVertical: 14,
-    paddingHorizontal: 22,
-    borderRadius: 30,
-    gap: 8,
+    paddingVertical: 8,
   },
-  photoShutter: {
-    backgroundColor: '#FFFFFF',
-  },
-  videoShutter: {
-    backgroundColor: '#EF4444',
-  },
-  recordingActive: {
-    backgroundColor: '#111827',
-    borderWidth: 2,
-    borderColor: '#EF4444',
+  doneLinkText: {
+    fontFamily: fonts.monoSemi,
+    fontSize: 12,
+    color: colors.onSurfaceVariant,
+    letterSpacing: 1,
   },
   disabled: {
     opacity: 0.6,
   },
-  shutterLabel: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#000000',
-  },
-  shutterLabelLight: {
-    color: '#FFFFFF',
-  },
   recordCircle: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#FFFFFF',
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: colors.error,
   },
   stopSquare: {
     width: 12,
     height: 12,
     borderRadius: 2,
-    backgroundColor: '#EF4444',
+    backgroundColor: colors.error,
   },
 });

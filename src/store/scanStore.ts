@@ -1,10 +1,11 @@
 import { create } from 'zustand';
-import type { ClassificationResult } from '../ml/classifyFrame';
+import type { ClassificationResult } from '../ml/prediction';
 import type {
   CaptureMedia,
   GalleryItem,
   PredictionLogEntry,
   StoredClassification,
+  StoredYoloDetection,
   TrayDetection,
 } from '../types';
 import { MAX_GALLERY_ITEMS } from '../types';
@@ -56,15 +57,18 @@ function makeLogEntry(
 interface ScanState {
   expectedCount: number;
   detections: TrayDetection[];
+  /** YOLO boxes for the active capture (summary / gallery open). */
+  yoloDetections: StoredYoloDetection[];
   captureMedia: CaptureMedia | null;
   activeGalleryId: string | null;
   gallery: GalleryItem[];
   galleryHydrated: boolean;
   isScanning: boolean;
-  /** Rolling MobileNet response log (live + gallery). */
+  /** Rolling YOLO response log (live + gallery). */
   predictionLog: PredictionLogEntry[];
   setExpectedCount: (count: number) => void;
   setDetections: (detections: TrayDetection[]) => void;
+  setYoloDetections: (detections: StoredYoloDetection[]) => void;
   setCaptureMedia: (media: CaptureMedia | null) => void;
   logPrediction: (
     result: ClassificationResult,
@@ -77,6 +81,7 @@ interface ScanState {
     media: CaptureMedia,
     expectedCount?: number,
     classification?: ClassificationResult | null,
+    yoloDetections?: StoredYoloDetection[] | null,
   ) => Promise<GalleryItem | null>;
   updateGalleryClassification: (
     id: string,
@@ -95,6 +100,7 @@ interface ScanState {
 export const useScanStore = create<ScanState>((set, get) => ({
   expectedCount: 9,
   detections: [],
+  yoloDetections: [],
   captureMedia: null,
   activeGalleryId: null,
   gallery: [],
@@ -103,6 +109,7 @@ export const useScanStore = create<ScanState>((set, get) => ({
   predictionLog: [],
   setExpectedCount: (count) => set({ expectedCount: count }),
   setDetections: (detections) => set({ detections }),
+  setYoloDetections: (yoloDetections) => set({ yoloDetections }),
   setCaptureMedia: (media) => set({ captureMedia: media }),
 
   logPrediction: (result, source, locked, galleryId) => {
@@ -125,7 +132,7 @@ export const useScanStore = create<ScanState>((set, get) => ({
     set({ gallery: items, galleryHydrated: true });
   },
 
-  completeCapture: async (media, expectedCount, classification) => {
+  completeCapture: async (media, expectedCount, classification, yoloDetections) => {
     const count = expectedCount ?? get().expectedCount;
     const detections = buildDummyDetections(count);
     const id = createGalleryId();
@@ -137,6 +144,10 @@ export const useScanStore = create<ScanState>((set, get) => ({
             classification.locked === true || classification.score >= 0.5,
           )
         : undefined;
+    const yolo =
+      yoloDetections != null && yoloDetections.length > 0
+        ? yoloDetections.map((d) => ({ ...d }))
+        : undefined;
 
     try {
       const persistedMedia = await persistCaptureMedia(media, id);
@@ -147,6 +158,7 @@ export const useScanStore = create<ScanState>((set, get) => ({
         expectedCount: count,
         createdAt,
         classification: stored,
+        yoloDetections: yolo,
       };
 
       const nextGallery = await pruneGalleryItems([item, ...get().gallery], MAX_GALLERY_ITEMS);
@@ -160,6 +172,7 @@ export const useScanStore = create<ScanState>((set, get) => ({
         expectedCount: count,
         captureMedia: persistedMedia,
         detections,
+        yoloDetections: yolo ?? [],
         activeGalleryId: id,
         gallery: nextGallery,
         isScanning: false,
@@ -171,6 +184,7 @@ export const useScanStore = create<ScanState>((set, get) => ({
         expectedCount: count,
         captureMedia: media,
         detections,
+        yoloDetections: yolo ?? [],
         activeGalleryId: null,
         isScanning: false,
       });
@@ -193,6 +207,7 @@ export const useScanStore = create<ScanState>((set, get) => ({
       activeGalleryId: item.id,
       captureMedia: item.media,
       detections: item.detections,
+      yoloDetections: item.yoloDetections ?? [],
       expectedCount: item.expectedCount,
       isScanning: false,
     });
@@ -212,7 +227,12 @@ export const useScanStore = create<ScanState>((set, get) => ({
     set({
       gallery: next,
       ...(clearingActive
-        ? { activeGalleryId: null, captureMedia: null, detections: [] }
+        ? {
+            activeGalleryId: null,
+            captureMedia: null,
+            detections: [],
+            yoloDetections: [],
+          }
         : {}),
     });
   },
@@ -224,18 +244,26 @@ export const useScanStore = create<ScanState>((set, get) => ({
       activeGalleryId: null,
       captureMedia: null,
       detections: [],
+      yoloDetections: [],
     });
   },
 
   resetScan: () =>
     set({
       detections: [],
+      yoloDetections: [],
       captureMedia: null,
       activeGalleryId: null,
       isScanning: false,
     }),
   startScan: () =>
-    set({ isScanning: true, detections: [], captureMedia: null, activeGalleryId: null }),
+    set({
+      isScanning: true,
+      detections: [],
+      yoloDetections: [],
+      captureMedia: null,
+      activeGalleryId: null,
+    }),
   stopScan: () => set({ isScanning: false }),
   galleryBytesUsed: () => sumGalleryBytes(get().gallery),
 }));

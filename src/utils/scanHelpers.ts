@@ -17,8 +17,8 @@ export function buildDummyDetections(expectedCount: number): TrayDetection[] {
     // Alternate high / low confidence so amber flags appear in the audit list.
     const confidence =
       i % 3 === 1
-        ? 0.42 + (i % 5) * 0.02
-        : 0.82 + (i % 7) * 0.02;
+        ? 0.55 + (i % 5) * 0.02
+        : 0.88 + (i % 7) * 0.01;
     return {
       sequence: i + 1,
       colour,

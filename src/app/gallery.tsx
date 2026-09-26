@@ -13,13 +13,14 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppModel } from '../ml/ModelProvider';
-import { runYoloOnImageUri } from '../ml/yoloOnImage';
-import { YOLO_CONF_THRESH } from '../ml/yoloDecode';
 import { useScanStore } from '../store/scanStore';
 import type { GalleryItem, StoredClassification } from '../types';
 import { MAX_GALLERY_ITEMS } from '../types';
 import { formatBytes, sumGalleryBytes } from '../utils/galleryStorage';
+import { colors, fonts } from '../theme/scanner';
 import { describeCapture, toMediaUri } from '../utils/scanHelpers';
+
+const YOLO_CONF_THRESH = 0.45;
 
 function GalleryCard({
   item,
@@ -40,6 +41,7 @@ function GalleryCard({
     minute: '2-digit',
   });
   const cls = item.classification;
+  const yoloCount = item.yoloDetections?.length ?? 0;
 
   return (
     <TouchableOpacity
@@ -62,7 +64,12 @@ function GalleryCard({
             : describeCapture(item.media)}
         </Text>
         <Text style={styles.cardSub}>
-          {cls ? (cls.locked ? 'Detection' : 'Detected') : 'Not detected'} · {when}
+          {yoloCount > 0
+            ? `${yoloCount} YOLO box${yoloCount === 1 ? '' : 'es'}`
+            : cls
+              ? 'Detected'
+              : 'Not detected'}{' '}
+          · {when}
         </Text>
         {item.media.byteSize != null ? (
           <Text style={styles.cardSize}>{formatBytes(item.media.byteSize)}</Text>
@@ -75,7 +82,7 @@ function GalleryCard({
 export default function GalleryScreen() {
   const router = useRouter();
   const { width: windowWidth } = useWindowDimensions();
-  const { model, state: modelState } = useAppModel();
+  const { detectImageUri, state: modelState, isLoaded } = useAppModel();
   const gallery = useScanStore((s) => s.gallery);
   const openGalleryItem = useScanStore((s) => s.openGalleryItem);
   const removeGalleryItem = useScanStore((s) => s.removeGalleryItem);
@@ -129,7 +136,7 @@ export default function GalleryScreen() {
   );
 
   const handleClassifyAll = useCallback(async () => {
-    if (model == null || modelState !== 'loaded') {
+    if (!isLoaded || modelState !== 'loaded') {
       Alert.alert('Model not ready', 'Wait for YOLOv8n to finish loading.');
       return;
     }
@@ -146,7 +153,7 @@ export default function GalleryScreen() {
       for (const item of photos) {
         done += 1;
         setClassifyProgress(`Detecting ${done}/${photos.length}…`);
-        const dets = await runYoloOnImageUri(model, toMediaUri(item.media.path));
+        const dets = await detectImageUri(toMediaUri(item.media.path));
         const top = dets[0];
         if (top == null) continue;
 
@@ -175,7 +182,7 @@ export default function GalleryScreen() {
       }
       Alert.alert(
         'Gallery detected',
-        `Ran YOLOv8n on ${photos.length} photo(s). ${withDets} had ≥1 detection.`,
+        `Ran native YOLOv8n on ${photos.length} photo(s). ${withDets} had ≥1 detection.`,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Detection failed.';
@@ -185,9 +192,10 @@ export default function GalleryScreen() {
       setBusy(false);
     }
   }, [
+    detectImageUri,
     gallery,
+    isLoaded,
     logPrediction,
-    model,
     modelState,
     updateGalleryClassification,
   ]);
@@ -280,7 +288,7 @@ export default function GalleryScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#07110d',
+    backgroundColor: colors.background,
   },
   header: {
     flexDirection: 'row',
@@ -290,42 +298,45 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   backBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 16,
-    backgroundColor: '#1f2937',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: colors.surfaceContainer,
+    borderWidth: 1,
+    borderColor: colors.border,
   },
   backBtnText: {
-    color: '#fff',
-    fontWeight: '700',
+    color: colors.onSurface,
+    fontFamily: fonts.sansMd,
     fontSize: 13,
   },
   headerText: {
     flex: 1,
   },
   title: {
-    color: '#fff',
+    color: colors.onSurface,
+    fontFamily: fonts.sansBold,
     fontSize: 22,
-    fontWeight: '800',
   },
   subtitle: {
-    color: '#9CA3AF',
-    fontSize: 12,
+    color: colors.muted,
+    fontFamily: fonts.mono,
+    fontSize: 11,
     marginTop: 2,
   },
   clearBtn: {
-    paddingVertical: 8,
+    paddingVertical: 10,
     paddingHorizontal: 12,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#F59E0B',
+    borderRadius: 12,
+    borderWidth: 1.5,
+    borderColor: colors.warning,
   },
   clearBtnDisabled: {
     opacity: 0.4,
   },
   clearBtnText: {
-    color: '#FDE68A',
-    fontWeight: '700',
+    color: colors.tertiary,
+    fontFamily: fonts.sansMd,
     fontSize: 13,
   },
   actions: {
@@ -333,18 +344,19 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
   },
   classifyBtn: {
-    backgroundColor: '#42d77d',
-    borderRadius: 16,
-    paddingVertical: 12,
+    backgroundColor: colors.primaryContainer,
+    borderRadius: 12,
+    paddingVertical: 14,
     paddingHorizontal: 16,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
+    minHeight: 52,
   },
   classifyBtnText: {
-    color: '#07110d',
-    fontWeight: '800',
+    color: colors.white,
+    fontFamily: fonts.sansBold,
     fontSize: 14,
   },
   list: {
@@ -356,24 +368,24 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   card: {
-    backgroundColor: '#0f1a15',
+    backgroundColor: colors.elevated,
     borderRadius: 14,
     overflow: 'hidden',
     borderWidth: 1,
-    borderColor: '#1f2937',
+    borderColor: colors.border,
   },
   thumb: {
     width: '100%',
     height: 120,
-    backgroundColor: '#111827',
+    backgroundColor: colors.surfaceContainerLowest,
   },
   videoThumb: {
     alignItems: 'center',
     justifyContent: 'center',
   },
   videoBadge: {
-    color: '#fff',
-    fontWeight: '800',
+    color: colors.white,
+    fontFamily: fonts.monoBold,
     letterSpacing: 1,
     fontSize: 14,
   },
@@ -382,34 +394,35 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   cardTitle: {
-    color: '#fff',
-    fontWeight: '700',
+    color: colors.onSurface,
+    fontFamily: fonts.sansMd,
     fontSize: 13,
-    textTransform: 'capitalize',
   },
   cardSub: {
-    color: '#9CA3AF',
+    color: colors.muted,
+    fontFamily: fonts.mono,
     fontSize: 11,
   },
   cardSize: {
-    color: '#6B7280',
+    color: colors.onSurfaceVariant,
+    fontFamily: fonts.mono,
     fontSize: 10,
-    marginTop: 2,
   },
   empty: {
-    paddingHorizontal: 28,
-    gap: 10,
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    gap: 8,
   },
   emptyTitle: {
-    color: '#fff',
+    color: colors.onSurface,
+    fontFamily: fonts.sansBold,
     fontSize: 18,
-    fontWeight: '800',
-    textAlign: 'center',
   },
   emptyBody: {
-    color: '#9CA3AF',
+    color: colors.onSurfaceVariant,
+    fontFamily: fonts.sans,
     fontSize: 14,
-    lineHeight: 20,
     textAlign: 'center',
+    lineHeight: 20,
   },
 });

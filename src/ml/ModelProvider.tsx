@@ -3,110 +3,126 @@ import {
   useContext,
   useEffect,
   useMemo,
-  useRef,
+  useState,
   type ReactNode,
 } from 'react';
-import {
-  useTensorflowModel,
-  type TfliteModel,
-} from 'react-native-fast-tflite';
-import {
-  logModelTensors,
-  type ModelTensorReport,
-} from './inspectModel';
-import { YOLO_INT8_ASSET } from './modelAsset';
+import ExpoYoloTflite from 'expo-yolo-tflite';
+import type {
+  ModelTensorReport,
+  YoloDetection,
+} from 'expo-yolo-tflite';
 
 type ModelState = 'loading' | 'loaded' | 'error';
 
 type AppModelContextValue = {
-  model: TfliteModel | undefined;
+  isLoaded: boolean;
   state: ModelState;
   error: Error | undefined;
-  /** Inspected input/output tensors once the model has loaded. */
   tensors: ModelTensorReport | undefined;
-  /** True once loading finished (success or failure). */
   isReady: boolean;
+  isSupported: boolean;
+  detectImageUri: (uri: string) => Promise<YoloDetection[]>;
+  detectRgb: (
+    pixels: Uint8Array,
+    width: number,
+    height: number,
+    stride: number,
+    channels: number,
+    isBgra: boolean,
+  ) => Promise<YoloDetection[]>;
+  annotateImageUri: (
+    uri: string,
+    detections: YoloDetection[],
+  ) => Promise<string>;
 };
 
 const AppModelContext = createContext<AppModelContextValue | null>(null);
 
-/** Stable empty delegates array — CPU default. */
-const YOLO_DELEGATES: [] = [];
+function logTensorReport(report: ModelTensorReport, label: string) {
+  console.log(`[${label}] model loaded`);
+  console.log(
+    'TENSORS:',
+    JSON.stringify(
+      {
+        inputShape: report.inputShape,
+        inputDtype: report.inputDtype,
+        outputShape: report.outputShape,
+        outputDtype: report.outputDtype,
+        numClasses: report.numClasses,
+        usingGpu: report.usingGpu ?? false,
+      },
+      null,
+      2,
+    ),
+  );
+  console.log(`[${label}] inputs (${report.inputs.length}):`);
+  for (const input of report.inputs) {
+    console.log(
+      `  [${input.index}] name="${input.name}" shape=[${input.shape.join(', ')}] type=${input.dataType}`,
+    );
+  }
+  console.log(`[${label}] outputs (${report.outputs.length}):`);
+  for (const output of report.outputs) {
+    console.log(
+      `  [${output.index}] name="${output.name}" shape=[${output.shape.join(', ')}] type=${output.dataType}`,
+    );
+  }
+}
 
 /**
- * Loads YOLOv8n int8 once at app startup and shares the Nitro HybridObject
- * with screens (camera frame processors, gallery).
+ * Loads native YOLOv8n (LiteRT Expo module) once at startup.
  */
 export function ModelProvider({ children }: { children: ReactNode }) {
-  const plugin = useTensorflowModel(YOLO_INT8_ASSET, YOLO_DELEGATES);
-  const didLog = useRef(false);
-
-  const tensors = useMemo<ModelTensorReport | undefined>(() => {
-    if (plugin.state !== 'loaded' || plugin.model == null) return undefined;
-    return {
-      inputs: plugin.model.inputs.map((t, index) => ({
-        index,
-        name: t.name,
-        shape: [...t.shape],
-        dataType: t.dataType,
-      })),
-      outputs: plugin.model.outputs.map((t, index) => ({
-        index,
-        name: t.name,
-        shape: [...t.shape],
-        dataType: t.dataType,
-      })),
-    };
-  }, [plugin]);
+  const [state, setState] = useState<ModelState>('loading');
+  const [error, setError] = useState<Error | undefined>();
+  const [tensors, setTensors] = useState<ModelTensorReport | undefined>();
+  const isSupported = ExpoYoloTflite.isSupported();
 
   useEffect(() => {
-    if (plugin.state !== 'loaded' || plugin.model == null || didLog.current) return;
-    didLog.current = true;
-    logModelTensors(plugin.model, 'YOLOv8n Int8');
-
-    // Prove Invoke works (zeros) before the camera ever runs.
-    try {
-      const bytes =
-        plugin.model.inputs[0]!.shape.reduce((a, b) => a * b, 1) * 4;
-      const zeros = new ArrayBuffer(bytes);
-      const t0 = Date.now();
-      const outs = plugin.model.runSync([zeros]);
-      const outBytes = outs[0]?.byteLength ?? 0;
-      console.log(
-        `[YOLOv8n Int8] smoke Invoke OK in ${Date.now() - t0}ms · out ${outBytes} bytes`,
-      );
-    } catch (error) {
-      console.warn('[YOLOv8n Int8] smoke Invoke FAILED', error);
-    }
-  }, [plugin.state, plugin.model]);
+    let cancelled = false;
+    (async () => {
+      if (!ExpoYoloTflite.isSupported()) {
+        if (!cancelled) {
+          setState('error');
+          setError(new Error('ExpoYoloTflite is not supported on this platform'));
+        }
+        return;
+      }
+      try {
+        setState('loading');
+        const report = await ExpoYoloTflite.loadModel();
+        if (cancelled) return;
+        setTensors(report);
+        setState('loaded');
+        setError(undefined);
+        logTensorReport(report, 'YOLOv8n Int8 (native)');
+      } catch (e) {
+        if (cancelled) return;
+        console.error('Failed to load native YOLO', e);
+        setState('error');
+        setError(e instanceof Error ? e : new Error(String(e)));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const value = useMemo<AppModelContextValue>(() => {
-    if (plugin.state === 'loaded') {
-      return {
-        model: plugin.model,
-        state: 'loaded',
-        error: undefined,
-        tensors,
-        isReady: true,
-      };
-    }
-    if (plugin.state === 'error') {
-      return {
-        model: undefined,
-        state: 'error',
-        error: plugin.error,
-        tensors: undefined,
-        isReady: true,
-      };
-    }
     return {
-      model: undefined,
-      state: 'loading',
-      error: undefined,
-      tensors: undefined,
-      isReady: false,
+      isLoaded: state === 'loaded',
+      state,
+      error,
+      tensors,
+      isReady: state !== 'loading',
+      isSupported,
+      detectImageUri: (uri) => ExpoYoloTflite.detectImageUri(uri),
+      detectRgb: (pixels, width, height, stride, channels, isBgra) =>
+        ExpoYoloTflite.detectRgb(pixels, width, height, stride, channels, isBgra),
+      annotateImageUri: (uri, detections) =>
+        ExpoYoloTflite.annotateImageUri(uri, detections),
     };
-  }, [plugin, tensors]);
+  }, [state, error, tensors, isSupported]);
 
   return (
     <AppModelContext.Provider value={value}>{children}</AppModelContext.Provider>
@@ -120,3 +136,5 @@ export function useAppModel(): AppModelContextValue {
   }
   return ctx;
 }
+
+export type { YoloDetection, ModelTensorReport };

@@ -1,19 +1,29 @@
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
+import {
+  Inter_400Regular,
+  Inter_600SemiBold,
+  Inter_700Bold,
+  useFonts as useInter,
+} from '@expo-google-fonts/inter';
+import {
+  JetBrainsMono_500Medium,
+  JetBrainsMono_600SemiBold,
+  JetBrainsMono_700Bold,
+  useFonts as useMono,
+} from '@expo-google-fonts/jetbrains-mono';
 import { useEffect, useRef, useState } from 'react';
 import { StatusBar } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 import {
-    useCameraPermission,
-    useMicrophonePermission,
+  useCameraPermission,
+  useMicrophonePermission,
 } from 'react-native-vision-camera';
 import { ModelProvider, useAppModel } from '../ml/ModelProvider';
 import { useScanStore } from '../store/scanStore';
+import { colors } from '../theme/scanner';
 
-// Keep splash visible until permissions are prompted and the TFLite model settles.
-SplashScreen.preventAutoHideAsync().catch(() => {
-  // Ignore if splash was already hidden (fast refresh).
-});
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 function BootstrapGate({ children }: { children: React.ReactNode }) {
   const {
@@ -33,6 +43,18 @@ function BootstrapGate({ children }: { children: React.ReactNode }) {
   const [gallerySettled, setGallerySettled] = useState(false);
   const didPrompt = useRef(false);
 
+  const [interLoaded] = useInter({
+    Inter_400Regular,
+    Inter_600SemiBold,
+    Inter_700Bold,
+  });
+  const [monoLoaded] = useMono({
+    JetBrainsMono_500Medium,
+    JetBrainsMono_600SemiBold,
+    JetBrainsMono_700Bold,
+  });
+  const fontsReady = interLoaded && monoLoaded;
+
   useEffect(() => {
     if (didPrompt.current) return;
     didPrompt.current = true;
@@ -40,7 +62,6 @@ function BootstrapGate({ children }: { children: React.ReactNode }) {
     let cancelled = false;
     (async () => {
       try {
-        // Prompt camera + microphone on first launch before any camera screen.
         if (!hasCameraPermission && canRequestCamera) {
           await requestCameraPermission();
         }
@@ -57,7 +78,6 @@ function BootstrapGate({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-    // Intentionally run once on mount with the initial permission API snapshot.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -83,7 +103,8 @@ function BootstrapGate({ children }: { children: React.ReactNode }) {
     }
   }, [modelState, modelError]);
 
-  const appReady = permissionsSettled && gallerySettled && modelReady;
+  const appReady =
+    permissionsSettled && gallerySettled && modelReady && fontsReady;
 
   useEffect(() => {
     if (!appReady) return;
@@ -100,12 +121,13 @@ function BootstrapGate({ children }: { children: React.ReactNode }) {
 function RootNavigator() {
   return (
     <>
-      <StatusBar barStyle="dark-content" backgroundColor="black" />
+      <StatusBar barStyle="light-content" backgroundColor={colors.background} />
       <Stack
         screenOptions={{
           headerShown: false,
           animation: 'fade',
-        }}  
+          contentStyle: { backgroundColor: colors.background },
+        }}
       >
         <Stack.Screen name="index" />
         <Stack.Screen name="camera" />

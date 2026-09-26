@@ -1,0 +1,9 @@
+{
+  "platforms": ["android", "apple"],
+  "apple": {
+    "modules": ["ExpoYoloTfliteModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.yolotflite.ExpoYoloTfliteModule"]
+  }
+}

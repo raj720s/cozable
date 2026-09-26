@@ -42,16 +42,6 @@
         }
       ],
       [
-        "react-native-fast-tflite",
-        {
-          "enableCoreMLDelegate": true,
-          "enableAndroidGpuLibraries": [
-            "libOpenCL.so",
-            "libOpenGLES.so"
-          ]
-        }
-      ],
-      [
         "expo-build-properties",
         {
           "android": {

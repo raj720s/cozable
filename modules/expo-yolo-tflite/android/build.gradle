@@ -1,0 +1,25 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.yolotflite'
+version = '0.1.0'
+
+android {
+  namespace "expo.modules.yolotflite"
+  defaultConfig {
+    versionCode 1
+    versionName "0.1.0"
+  }
+  lintOptions {
+    abortOnError false
+  }
+}
+
+dependencies {
+  implementation 'com.google.ai.edge.litert:litert:1.4.1'
+  implementation 'com.google.ai.edge.litert:litert-support:1.4.1'
+  implementation 'com.google.ai.edge.litert:litert-gpu:1.4.1'
+  implementation 'com.google.ai.edge.litert:litert-gpu-api:1.4.1'
+}
