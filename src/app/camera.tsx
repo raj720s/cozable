@@ -80,7 +80,8 @@ function isBenignCameraError(error: Error): boolean {
   return (
     message.includes('OperationCanceledException') ||
     message.includes('Cancelled due to another zoom') ||
-    message.includes('Camera is not active')
+    message.includes('Camera is not active') ||
+    message.includes('No flash unit')
   );
 }
 
@@ -129,6 +130,7 @@ export default function CameraScreen() {
   const [cameraPosition, setCameraPosition] = useState<'back' | 'front'>('back');
   const [flashMode, setFlashMode] = useState<FlashMode>('off');
   const [torchMode, setTorchMode] = useState<TorchMode>('off');
+  const [scanMode, setScanMode] = useState<'horizontal' | 'vertical'>('vertical');
   const [isRecording, setIsRecording] = useState(false);
   const [permissionBusy, setPermissionBusy] = useState(false);
   const [cameraStarted, setCameraStarted] = useState(false);
@@ -255,18 +257,19 @@ export default function CameraScreen() {
         const format = String(frame.pixelFormat);
         const isBgra = format.includes('bgra');
         const channels = stride >= width * 4 ? 4 : 3;
-        // Single copy — buffer is invalidated when Frame is disposed.
-        // True AHardwareBuffer zero-copy needs a native HybridObject; Expo
-        // still marshals Uint8Array → ByteArray once across the bridge.
-        packet = {
-          pixels: new Uint8Array(frame.getPixelBuffer()),
-          width,
-          height,
-          stride,
-          channels,
-          isBgra,
-        };
-        lastInferAt.setBlocking(now);
+        try {
+          packet = {
+            pixels: new Uint8Array(frame.getPixelBuffer()),
+            width,
+            height,
+            stride,
+            channels,
+            isBgra,
+          };
+          lastInferAt.setBlocking(now);
+        } catch (err) {
+          console.warn('Frame pixel buffer read failed:', err);
+        }
       }
 
       frame.dispose();
@@ -645,12 +648,7 @@ export default function CameraScreen() {
 
   return (
     <View style={styles.container}>
-      {/*
-        Safe area keeps Camera + YOLO overlay out of status/home black bars.
-        Those insets stay pure black and are never part of the frame buffer
-        used for detectRgb / overlay mapping.
-      */}
-      <SafeAreaView style={styles.safePreview} edges={['top', 'bottom']}>
+      <View style={styles.safePreview}>
         <View
           style={styles.previewFrame}
           onLayout={(e) => {
@@ -659,7 +657,7 @@ export default function CameraScreen() {
           }}
         >
           <Camera
-            resizeMode="contain"
+            resizeMode="cover"
             ref={cameraRef}
             style={StyleSheet.absoluteFill}
             device={device}
@@ -680,164 +678,84 @@ export default function CameraScreen() {
             onError={handleSessionError}
           />
 
-          {/* YOLO live overlay — frame-normalized → preview-pixel transform */}
-          <View style={styles.yoloOverlayRoot} pointerEvents="none">
-            {detections.map((d, i) => {
-              const { w: FW, h: FH } = frameDimsRef.current;
-              const isFront = cameraPosition === 'front';
-              // Camera uses resizeMode="contain" — letterbox inside previewFrame
-              const scale = Math.min(previewW / FW, previewH / FH);
-              const scaledW = FW * scale;
-              const scaledH = FH * scale;
-              const offsetX = (previewW - scaledW) / 2;
-              const offsetY = (previewH - scaledH) / 2;
-
-              const w = d.width * scaledW;
-              const h = d.height * scaledH;
-
-              let left = d.x * scaledW + offsetX;
-              const top = d.y * scaledH + offsetY;
-
-              if (isFront) {
-                left = previewW - left - w;
-              }
-
-              const drawW = Math.max(w, 60);
-              const drawH = Math.max(h, 30);
-              const color = CLASS_COLORS[d.classId] ?? '#00FF00';
-
-              return (
-                <View
-                  key={i}
-                  pointerEvents="none"
-                  style={{
-                    position: 'absolute',
-                    left,
-                    top,
-                    width: drawW,
-                    height: drawH,
-                    borderWidth: 3,
-                    borderColor: color,
-                    backgroundColor: 'transparent',
-                    zIndex: 999,
-                  }}
-                >
-                  <View
-                    style={{
-                      position: 'absolute',
-                      top: -22,
-                      left: 0,
-                      backgroundColor: color,
-                      paddingHorizontal: 6,
-                      paddingVertical: 2,
-                      borderRadius: 3,
-                    }}
-                  >
-                    <Text
-                      style={{ color: '#FFFFFF', fontSize: 14, fontWeight: 'bold' }}
-                      numberOfLines={1}
-                    >
-                      {d.label} {(d.confidence * 100).toFixed(1)}%
-                    </Text>
-                  </View>
-                </View>
-              );
-            })}
-          </View>
-
           <View style={styles.overlayContainer} pointerEvents="box-none">
-            <View style={styles.topRow}>
-              <View style={styles.topLeft}>
-                <TouchableOpacity style={styles.hudIcon} onPress={() => router.back()}>
-                  <Text style={styles.hudIconText}>←</Text>
+            {/* Top Grey Panel */}
+            <View style={styles.topSection}>
+              {/* Header */}
+              <View style={styles.header}>
+                <TouchableOpacity style={styles.iconBtn} onPress={() => router.back()}>
+                  <Text style={styles.iconBtnText}>←</Text>
                 </TouchableOpacity>
-                <View style={styles.scanBadge}>
-                  <Text style={styles.scanBadgeText}>Scan #01</Text>
-                </View>
+                <Text style={styles.headerTitle}>Scan Label</Text>
+                <TouchableOpacity style={styles.iconBtn}>
+                  <Text style={styles.iconBtnText}>?</Text>
+                </TouchableOpacity>
               </View>
 
-              <View style={styles.detectPill}>
-                <View style={styles.detectDot} />
-                <Text style={styles.detectPillText}>
-                  {detections.length} / {expectedCount} DETECTED
-                </Text>
+              {/* Toggle */}
+              <View style={styles.toggleContainer}>
+                <TouchableOpacity 
+                  style={[styles.toggleBtn, scanMode === 'horizontal' && styles.toggleBtnActive]} 
+                  onPress={() => setScanMode('horizontal')}
+                >
+                  <Text style={scanMode === 'horizontal' ? styles.toggleBtnActiveText : styles.toggleBtnText}>Horizontal</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={[styles.toggleBtn, scanMode === 'vertical' && styles.toggleBtnActive]} 
+                  onPress={() => setScanMode('vertical')}
+                >
+                  <Text style={scanMode === 'vertical' ? styles.toggleBtnActiveText : styles.toggleBtnText}>Vertical</Text>
+                </TouchableOpacity>
               </View>
 
-              <View style={styles.topActions}>
-                <TouchableOpacity
-                  style={[
-                    styles.hudIcon,
-                    torchMode === 'on' && styles.hudIconActive,
-                    (!device.hasTorch || cameraPosition === 'front') &&
-                      styles.hudIconDisabled,
-                  ]}
-                  onPress={toggleTorch}
-                >
-                  <Text style={styles.hudIconText}>{torchMode === 'on' ? '✦' : '✧'}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.hudIcon}
-                  onPress={() => router.push('/gallery')}
-                >
-                  <Text style={styles.hudIconText}>⚙</Text>
-                </TouchableOpacity>
+              <Text style={styles.helperText}>Place the label inside the box</Text>
+            </View>
+
+            {/* Reticle Wrapper to center it */}
+            <View style={styles.reticleWrapper} pointerEvents="none">
+              <View style={[styles.reticleContainer, scanMode === 'horizontal' ? styles.reticleHorizontal : styles.reticleVertical]}>
+                <View style={[styles.corner, styles.cornerTL]} />
+                <View style={[styles.corner, styles.cornerTR]} />
+                <View style={[styles.corner, styles.cornerBL]} />
+                <View style={[styles.corner, styles.cornerBR]} />
+
+                <View style={styles.laserLine} />
+                
+                {/* Corner tech text */}
+                <Text style={styles.reticleTechTL}>AI_OCR::TRACKING</Text>
+                <Text style={styles.reticleTechTR}>FPS: 60.0</Text>
+                <Text style={styles.reticleTechBL}>ZOOM 1.0X</Text>
+                <Text style={styles.reticleTechBR}>AUTO_EXPOSURE</Text>
               </View>
             </View>
 
-            <View style={styles.midRow} pointerEvents="box-none">
-              <View style={styles.detectionCard}>
-                <View style={styles.modelRow}>
-                  {!cameraStarted || modelState === 'loading' ? (
-                    <ActivityIndicator color={colors.primary} size="small" />
-                  ) : null}
-                  <Text style={styles.modelStatus}>
-                    {!cameraStarted ? 'Starting camera…' : modelStatusLabel}
-                  </Text>
-                </View>
-                <Text style={styles.detectionMeta}>{frameMetaLabel}</Text>
-                <Text style={styles.predictionText}>{predictionLabel}</Text>
-              </View>
-            </View>
-
-            {detections.some((d) => d.confidence < 0.85) ? (
-              <View style={styles.attentionBar}>
-                <Text style={styles.attentionText}>
-                  Low-confidence label — pan closer or SNAP for a still capture.
-                </Text>
-              </View>
-            ) : null}
-
-            <View style={styles.bottomRow}>
-              <TouchableOpacity style={styles.utilityBtn} onPress={toggleFlash}>
-                <Text style={styles.utilityBtnText}>
-                  {flashMode === 'off' ? '⚡' : '⚡+'}
-                </Text>
+            {/* Bottom Controls */}
+            <View style={styles.bottomSection}>
+              <TouchableOpacity style={styles.controlBtn} onPress={toggleTorch}>
+                <Text style={[styles.controlIcon, torchMode === 'on' ? { color: '#F59E0B', borderColor: '#F59E0B' } : {}]}>⚡</Text>
+                <Text style={styles.controlLabel}>TORCH</Text>
               </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.stopScanBtn, capturing && styles.disabled]}
-                onPress={() => void handleCapturePhoto()}
+              
+              <TouchableOpacity 
+                style={styles.captureBtnWrap} 
+                onPress={() => void handleCapturePhoto()} 
+                onLongPress={() => void handleToggleRecording()}
+                delayLongPress={300}
                 disabled={capturing}
               >
-                <Text style={styles.stopScanText}>
-                  {capturing ? 'CAPTURING…' : 'SNAP & REVIEW'}
-                </Text>
+                <View style={isRecording ? styles.captureBtnRingRec : styles.captureBtnRing}>
+                  <View style={isRecording ? styles.captureBtnInnerRec : styles.captureBtnInner} />
+                </View>
               </TouchableOpacity>
 
-              <TouchableOpacity
-                style={[styles.utilityBtn, isRecording && styles.utilityBtnRec]}
-                onPress={() => void handleToggleRecording()}
-              >
-                <View style={isRecording ? styles.stopSquare : styles.recordCircle} />
+              <TouchableOpacity style={styles.controlBtn} onPress={() => router.push('/gallery')}>
+                <Text style={styles.controlIcon}>🖼</Text>
+                <Text style={styles.controlLabel}>GALLERY</Text>
               </TouchableOpacity>
             </View>
-
-            <TouchableOpacity style={styles.doneLink} onPress={handleFinish}>
-              <Text style={styles.doneLinkText}>STOP SCAN · DONE</Text>
-            </TouchableOpacity>
           </View>
         </View>
-      </SafeAreaView>
+      </View>
     </View>
   );
 }
@@ -845,43 +763,56 @@ export default function CameraScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: '#0A0D14',
   },
   safePreview: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: '#0A0D14',
   },
   previewFrame: {
     flex: 1,
-    backgroundColor: '#000000',
+    backgroundColor: '#111',
     overflow: 'hidden',
   },
-  /** Full-bleed YOLO boxes over Camera preview. */
-  yoloOverlayRoot: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    zIndex: 999,
+  overlayContainer: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'transparent',
+    zIndex: 1000,
+    width: '100%',
+    height: '100%',
+    justifyContent: 'space-between',
+    display: 'flex',
+  },
+  topSection: {
+    backgroundColor: 'rgba(26, 28, 32, 0.95)',
+    borderBottomLeftRadius: 32,
+    borderBottomRightRadius: 32,
+    paddingHorizontal: 24,
+    paddingTop: 16,
+    paddingBottom: 24,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 10,
+    elevation: 8,
   },
   fallbackContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#F3F4F6',
+    backgroundColor: '#161A23',
     padding: 24,
     gap: 12,
   },
   fallbackTitle: {
     fontSize: 20,
     fontWeight: '700',
-    color: '#111827',
+    color: '#FFFFFF',
     textAlign: 'center',
   },
   fallbackText: {
     fontSize: 15,
-    color: '#4B5563',
+    color: '#9CA3AF',
     textAlign: 'center',
     lineHeight: 22,
   },
@@ -907,200 +838,257 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     fontSize: 15,
   },
-  overlayContainer: {
-    position: 'absolute',
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-    justifyContent: 'space-between',
-    padding: 16,
-    zIndex: 1000,
-  },
-  topRow: {
+  // Header
+  header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    gap: 8,
   },
-  topLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  topActions: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  hudIcon: {
+  iconBtn: {
     width: 44,
     height: 44,
-    borderRadius: 12,
-    backgroundColor: 'rgba(18, 19, 22, 0.72)',
+    borderRadius: 22,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: '#374151',
     alignItems: 'center',
     justifyContent: 'center',
   },
-  hudIconActive: {
-    borderColor: colors.warning,
-    backgroundColor: 'rgba(245, 158, 11, 0.25)',
-  },
-  hudIconDisabled: {
-    opacity: 0.4,
-  },
-  hudIconText: {
-    color: colors.white,
+  iconBtnText: {
+    color: '#FFFFFF',
     fontSize: 18,
+    fontWeight: 'bold',
+  },
+  headerTitle: {
     fontFamily: fonts.sansBold,
+    fontSize: 18,
+    color: '#FFFFFF',
   },
-  scanBadge: {
-    backgroundColor: 'rgba(18, 19, 22, 0.72)',
-    borderRadius: 8,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  scanBadgeText: {
-    fontFamily: fonts.monoSemi,
-    fontSize: 12,
-    color: colors.onSurface,
-  },
-  detectPill: {
+  // Toggle
+  toggleContainer: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: 'rgba(18, 19, 22, 0.8)',
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
     borderRadius: 999,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    padding: 4,
+    marginTop: 20,
     borderWidth: 1,
-    borderColor: colors.outlineVariant,
+    borderColor: '#374151',
   },
-  detectDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: colors.primary,
+  toggleBtn: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderRadius: 999,
   },
-  detectPillText: {
-    fontFamily: fonts.monoSemi,
-    fontSize: 11,
-    color: colors.onSurface,
-    letterSpacing: 0.4,
+  toggleBtnActive: {
+    backgroundColor: '#3B82F6',
   },
-  midRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
+  toggleBtnText: {
+    fontFamily: fonts.sansMd,
+    fontSize: 13,
+    color: '#9CA3AF',
   },
-  detectionCard: {
+  toggleBtnActiveText: {
+    fontFamily: fonts.sansBold,
+    fontSize: 13,
+    color: '#FFFFFF',
+  },
+  helperText: {
+    alignSelf: 'center',
+    fontFamily: fonts.sans,
+    fontSize: 14,
+    color: '#D1D5DB',
+    marginTop: 16,
+  },
+  // Reticle
+  reticleWrapper: {
     flex: 1,
-    backgroundColor: 'rgba(26, 28, 32, 0.88)',
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: colors.border,
-    gap: 4,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
-  modelRow: {
+  reticleContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+    backgroundColor: 'rgba(255,255,255,0.02)',
+    borderRadius: 16,
+  },
+  reticleHorizontal: {
+    width: '90%',
+    aspectRatio: 16 / 10,
+  },
+  reticleVertical: {
+    height: '65%',
+    aspectRatio: 3 / 4,
+  },
+  corner: {
+    position: 'absolute',
+    width: 40,
+    height: 40,
+    borderWidth: 4,
+    borderRadius: 8,
+  },
+  cornerTL: {
+    top: -4,
+    left: -4,
+    borderBottomWidth: 0,
+    borderRightWidth: 0,
+    borderColor: '#3B82F6', // Blue
+  },
+  cornerTR: {
+    top: -4,
+    right: -4,
+    borderBottomWidth: 0,
+    borderLeftWidth: 0,
+    borderColor: '#10B981', // Green
+  },
+  cornerBL: {
+    bottom: -4,
+    left: -4,
+    borderTopWidth: 0,
+    borderRightWidth: 0,
+    borderColor: '#EF4444', // Red/Orange
+  },
+  cornerBR: {
+    bottom: -4,
+    right: -4,
+    borderTopWidth: 0,
+    borderLeftWidth: 0,
+    borderColor: '#F59E0B', // Yellow/Orange
+  },
+  reticleTechTL: { position: 'absolute', top: 16, left: 16, fontFamily: fonts.mono, fontSize: 10, color: '#4B5563', letterSpacing: 1 },
+  reticleTechTR: { position: 'absolute', top: 16, right: 16, fontFamily: fonts.mono, fontSize: 10, color: '#4B5563', letterSpacing: 1 },
+  reticleTechBL: { position: 'absolute', bottom: 16, left: 16, fontFamily: fonts.mono, fontSize: 10, color: '#4B5563', letterSpacing: 1 },
+  reticleTechBR: { position: 'absolute', bottom: 16, right: 16, fontFamily: fonts.mono, fontSize: 10, color: '#4B5563', letterSpacing: 1 },
+  // Fake OCR Card
+  dataCard: {
+    backgroundColor: '#FFFFFF',
+    width: '90%',
+    borderRadius: 16,
+    padding: 16,
+    gap: 8,
+    shadowColor: '#3B82F6',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.3,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  dataRow: {
     flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  dataLabel: {
+    fontFamily: fonts.sansMd,
+    fontSize: 12,
+    color: '#9CA3AF',
+  },
+  dataValue: {
+    fontFamily: fonts.monoBold,
+    fontSize: 13,
+    color: '#111827',
+  },
+  freshPrepBadge: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#4E8354', // Dark green background for the badge
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+    marginTop: 4,
+  },
+  freshPrepText: {
+    fontFamily: fonts.sansBold,
+    fontSize: 11,
+    color: '#FFFFFF',
+    letterSpacing: 1,
+  },
+  freshPrepDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#A7F3D0', // Light green dot
+  },
+  laserLine: {
+    position: 'absolute',
+    top: '50%',
+    left: -20,
+    right: -20,
+    height: 2,
+    backgroundColor: 'rgba(59, 130, 246, 0.5)',
+    shadowColor: '#3B82F6',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 1,
+    shadowRadius: 10,
+    elevation: 5,
+  },
+  // Bottom Controls
+  bottomSection: {
+    width: '100%',
+    flexDirection: 'row',
+    justifyContent: 'space-evenly',
+    alignItems: 'center',
+    paddingBottom: 48,
+    paddingTop: 16,
+  },
+  controlBtn: {
     alignItems: 'center',
     gap: 8,
   },
-  modelStatus: {
-    color: colors.secondary,
-    fontFamily: fonts.mono,
-    fontSize: 11,
-    letterSpacing: 0.4,
-    flex: 1,
-    textTransform: 'uppercase',
-  },
-  detectionMeta: {
-    color: colors.muted,
-    fontFamily: fonts.mono,
-    fontSize: 11,
-  },
-  predictionText: {
-    color: colors.primary,
-    fontFamily: fonts.sansBold,
-    fontSize: 16,
-    marginTop: 2,
-  },
-  attentionBar: {
-    backgroundColor: 'rgba(26, 28, 32, 0.92)',
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
+  controlIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
     borderWidth: 1,
-    borderColor: colors.warning,
-    marginBottom: 8,
+    borderColor: '#374151',
+    textAlign: 'center',
+    textAlignVertical: 'center',
+    lineHeight: 48,
+    fontSize: 20,
+    color: '#FFFFFF',
   },
-  attentionText: {
-    fontFamily: fonts.sans,
-    fontSize: 13,
-    color: colors.tertiary,
-  },
-  bottomRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  utilityBtn: {
-    width: 52,
-    height: 56,
-    borderRadius: 12,
-    backgroundColor: 'rgba(26, 28, 32, 0.92)',
-    borderWidth: 1.5,
-    borderColor: colors.border,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  utilityBtnRec: {
-    borderColor: colors.error,
-  },
-  utilityBtnText: {
-    fontSize: 18,
-    color: colors.white,
-  },
-  stopScanBtn: {
-    flex: 1,
-    height: 56,
-    borderRadius: 12,
-    backgroundColor: colors.primaryContainer,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  stopScanText: {
+  controlLabel: {
     fontFamily: fonts.sansBold,
-    fontSize: 16,
-    color: colors.white,
-    letterSpacing: 0.6,
-  },
-  doneLink: {
-    alignItems: 'center',
-    paddingVertical: 8,
-  },
-  doneLinkText: {
-    fontFamily: fonts.monoSemi,
-    fontSize: 12,
-    color: colors.onSurfaceVariant,
+    fontSize: 10,
+    color: '#D1D5DB',
     letterSpacing: 1,
   },
-  disabled: {
-    opacity: 0.6,
+  captureBtnWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  recordCircle: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
-    backgroundColor: colors.error,
+  captureBtnRing: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    borderWidth: 4,
+    borderColor: '#06B6D4',
+    borderTopColor: '#3B82F6',
+    borderBottomColor: '#10B981',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  stopSquare: {
-    width: 12,
-    height: 12,
-    borderRadius: 2,
-    backgroundColor: colors.error,
+  captureBtnInner: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: '#FFFFFF',
+  },
+  captureBtnRingRec: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    borderWidth: 4,
+    borderColor: '#EF4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  captureBtnInnerRec: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#EF4444',
   },
 });
