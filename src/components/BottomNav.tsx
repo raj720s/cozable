@@ -1,127 +1,251 @@
 import { router } from 'expo-router';
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { AppIcon, type AppIconName } from './AppIcon';
 import { colors, fonts } from '../theme/scanner';
 
-export type NavTab = 'home' | 'scan' | 'inventory' | 'use-first' | 'more';
+export type NavTab = 'home' | 'inventory' | 'scan' | 'use-first' | 'more';
 
-interface BottomNavProps {
-  active: NavTab;
-}
+type SideTab = {
+  id: Exclude<NavTab, 'scan'>;
+  label: string;
+  icon: AppIconName;
+  routeName: 'home' | 'inventory' | 'use-first' | 'more';
+};
 
-const TABS: { id: NavTab; label: string; icon: string; route: string }[] = [
-  { id: 'home', label: 'Home', icon: '⊞', route: '/home' },
-  { id: 'scan', label: 'Scan', icon: '⊡', route: '/camera' },
-  { id: 'inventory', label: 'Inventory', icon: '▣', route: '/inventory' },
-  { id: 'use-first', label: 'Use First', icon: '!', route: '/home' },
-  { id: 'more', label: 'More', icon: '···', route: '/home' },
+type AppTabBarProps = {
+  state: {
+    index: number;
+    routes: { key: string; name: string }[];
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  navigation: any;
+};
+
+const LEFT_TABS: SideTab[] = [
+  { id: 'home', label: 'Home', icon: 'home', routeName: 'home' },
+  { id: 'inventory', label: 'Inventory', icon: 'package-variant-closed', routeName: 'inventory' },
 ];
 
-export function BottomNav({ active }: BottomNavProps) {
+const RIGHT_TABS: SideTab[] = [
+  { id: 'use-first', label: 'Use First', icon: 'clock-alert-outline', routeName: 'use-first' },
+  { id: 'more', label: 'More', icon: 'dots-horizontal', routeName: 'more' },
+];
+
+function resolveActive(routeName: string | undefined): NavTab {
+  switch (routeName) {
+    case 'inventory':
+      return 'inventory';
+    case 'use-first':
+      return 'use-first';
+    case 'more':
+      return 'more';
+    case 'home':
+    default:
+      return 'home';
+  }
+}
+
+function SideTabButton({
+  tab,
+  active,
+  onPress,
+}: {
+  tab: SideTab;
+  active: boolean;
+  onPress: () => void;
+}) {
+  const tint = active ? colors.primary : colors.onSurfaceVariant;
   return (
-    <View style={styles.container}>
-      {TABS.map((tab) => {
-        const isActive = tab.id === active;
-        const isScan = tab.id === 'scan';
+    <TouchableOpacity
+      style={styles.tab}
+      onPress={onPress}
+      activeOpacity={0.7}
+      accessibilityRole="tab"
+      accessibilityState={{ selected: active }}
+    >
+      <AppIcon name={tab.icon} size={22} color={tint} />
+      <Text style={[styles.label, active && styles.labelActive]} numberOfLines={1}>
+        {tab.label}
+      </Text>
+      {active ? <View style={styles.activeDot} /> : null}
+    </TouchableOpacity>
+  );
+}
 
-        if (isScan) {
-          return (
-            <View key={tab.id} style={styles.centerTab}>
-              <TouchableOpacity
-                style={styles.scanBtn}
-                onPress={() => router.push('/camera' as any)}
-                activeOpacity={0.85}
-              >
-                <Text style={styles.scanIcon}>⊡</Text>
-              </TouchableOpacity>
-              <Text style={[styles.label, styles.labelActive]}>Scan</Text>
-            </View>
-          );
-        }
+/**
+ * Home | Inventory | [Scan] | Use First | More
+ * Scan pushes root `/camera`.
+ */
+export function AppTabBar({ state, navigation }: AppTabBarProps) {
+  const insets = useSafeAreaInsets();
+  const active = resolveActive(state.routes[state.index]?.name);
+  const bottomPad = Math.max(insets.bottom, 10);
 
-        return (
-          <TouchableOpacity
+  const openTab = (routeName: SideTab['routeName']) => {
+    const route = state.routes.find((r) => r.name === routeName);
+    if (!route) return;
+    const event = navigation.emit({
+      type: 'tabPress',
+      target: route.key,
+      canPreventDefault: true,
+    });
+    if (!event.defaultPrevented) {
+      navigation.navigate(routeName);
+    }
+  };
+
+  return (
+    <View style={[styles.container, { paddingBottom: bottomPad }]}>
+      <View style={styles.sideGroup}>
+        {LEFT_TABS.map((tab) => (
+          <SideTabButton
             key={tab.id}
-            style={styles.tab}
-            onPress={() => router.push(tab.route as any)}
-            activeOpacity={0.7}
-          >
-            <Text style={[styles.icon, isActive && styles.iconActive]}>{tab.icon}</Text>
-            <Text style={[styles.label, isActive && styles.labelActive]}>{tab.label}</Text>
-            {isActive && <View style={styles.activeDot} />}
-          </TouchableOpacity>
-        );
-      })}
+            tab={tab}
+            active={active === tab.id}
+            onPress={() => openTab(tab.routeName)}
+          />
+        ))}
+      </View>
+
+      <View style={styles.centerSlot}>
+        <TouchableOpacity
+          style={styles.scanBtn}
+          onPress={() => router.push('/camera')}
+          activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel="Open scanner"
+        >
+          <AppIcon name="camera" size={26} color={colors.primary} />
+        </TouchableOpacity>
+        <Text style={[styles.label, styles.labelActive]}>Scan</Text>
+      </View>
+
+      <View style={styles.sideGroup}>
+        {RIGHT_TABS.map((tab) => (
+          <SideTabButton
+            key={tab.id}
+            tab={tab}
+            active={active === tab.id}
+            onPress={() => openTab(tab.routeName)}
+          />
+        ))}
+      </View>
     </View>
   );
 }
 
+export function BottomNav({ active }: { active: NavTab }) {
+  const insets = useSafeAreaInsets();
+  const bottomPad = Math.max(insets.bottom, 10);
+
+  const go = (routeName: SideTab['routeName']) => {
+    if (routeName === 'home') router.navigate('/home');
+    else if (routeName === 'inventory') router.navigate('/inventory');
+    else if (routeName === 'use-first') router.navigate('/use-first');
+    else if (routeName === 'more') router.navigate('/more');
+  };
+
+  return (
+    <View style={[styles.container, { paddingBottom: bottomPad }]}>
+      <View style={styles.sideGroup}>
+        {LEFT_TABS.map((tab) => (
+          <SideTabButton
+            key={tab.id}
+            tab={tab}
+            active={active === tab.id}
+            onPress={() => go(tab.routeName)}
+          />
+        ))}
+      </View>
+      <View style={styles.centerSlot}>
+        <TouchableOpacity
+          style={styles.scanBtn}
+          onPress={() => router.push('/camera')}
+          activeOpacity={0.85}
+        >
+          <AppIcon name="camera" size={26} color={colors.primary} />
+        </TouchableOpacity>
+        <Text style={[styles.label, styles.labelActive]}>Scan</Text>
+      </View>
+      <View style={styles.sideGroup}>
+        {RIGHT_TABS.map((tab) => (
+          <SideTabButton
+            key={tab.id}
+            tab={tab}
+            active={active === tab.id}
+            onPress={() => go(tab.routeName)}
+          />
+        ))}
+      </View>
+    </View>
+  );
+}
+
+const TAB_BAR_CONTENT = 58;
+
 const styles = StyleSheet.create({
   container: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 80,
-    backgroundColor: colors.surfaceContainerLowest,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-    paddingHorizontal: 12,
-    paddingTop: 10,
-    paddingBottom: 16,
+    alignItems: 'flex-end',
+    backgroundColor: colors.surfaceContainerLowest,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    paddingHorizontal: 4,
+    paddingTop: 8,
+    minHeight: TAB_BAR_CONTENT,
+  },
+  sideGroup: {
+    flex: 2,
+    flexDirection: 'row',
+    alignItems: 'flex-end',
   },
   tab: {
     flex: 1,
     alignItems: 'center',
+    justifyContent: 'flex-end',
     gap: 3,
-    position: 'relative',
-    paddingTop: 2,
+    paddingBottom: 2,
+    minHeight: 48,
   },
-  centerTab: {
-    flex: 1,
+  centerSlot: {
+    flex: 1.15,
     alignItems: 'center',
-    position: 'relative',
-    top: -18,
-    gap: 4,
+    justifyContent: 'flex-end',
+    marginTop: -22,
+    gap: 2,
+    paddingBottom: 2,
   },
   scanBtn: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
     backgroundColor: colors.surfaceContainerHigh,
     borderWidth: 2,
     borderColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  scanIcon: {
-    fontSize: 22,
-    color: colors.primary,
-  },
-  icon: {
-    fontSize: 18,
-    color: colors.muted,
-  },
-  iconActive: {
-    color: colors.primary,
+    elevation: 6,
+    shadowColor: colors.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.35,
+    shadowRadius: 6,
   },
   label: {
     fontFamily: fonts.sans,
     fontSize: 10,
-    color: colors.muted,
+    color: colors.onSurfaceVariant,
+    textAlign: 'center',
   },
   labelActive: {
     fontFamily: fonts.sansMd,
     color: colors.primary,
   },
   activeDot: {
-    position: 'absolute',
-    bottom: -6,
     width: 4,
     height: 4,
     borderRadius: 2,
     backgroundColor: colors.primary,
+    marginTop: 1,
   },
 });

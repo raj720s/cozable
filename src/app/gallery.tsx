@@ -12,6 +12,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { AppIcon } from '../components/AppIcon';
 import { useAppModel } from '../ml/ModelProvider';
 import { useScanStore } from '../store/scanStore';
 import type { GalleryItem, StoredClassification } from '../types';
@@ -42,6 +43,7 @@ function GalleryCard({
   });
   const cls = item.classification;
   const yoloCount = item.yoloDetections?.length ?? 0;
+  const frameSamples = item.videoFrameReports?.length ?? 0;
 
   return (
     <TouchableOpacity
@@ -54,7 +56,11 @@ function GalleryCard({
         <Image source={{ uri }} style={styles.thumb} contentFit="cover" transition={150} />
       ) : (
         <View style={[styles.thumb, styles.videoThumb]}>
+          <AppIcon name="play-circle" size={40} color={colors.white} />
           <Text style={styles.videoBadge}>VIDEO</Text>
+          {frameSamples > 0 ? (
+            <Text style={styles.frameBadge}>{frameSamples} frames</Text>
+          ) : null}
         </View>
       )}
       <View style={styles.cardMeta}>
@@ -64,11 +70,15 @@ function GalleryCard({
             : describeCapture(item.media)}
         </Text>
         <Text style={styles.cardSub}>
-          {yoloCount > 0
-            ? `${yoloCount} YOLO box${yoloCount === 1 ? '' : 'es'}`
-            : cls
-              ? 'Detected'
-              : 'Not detected'}{' '}
+          {item.media.kind === 'video'
+            ? `${frameSamples} frame report${frameSamples === 1 ? '' : 's'}${
+                yoloCount > 0 ? ` · ${yoloCount} last boxes` : ''
+              }`
+            : yoloCount > 0
+              ? `${yoloCount} YOLO box${yoloCount === 1 ? '' : 'es'}`
+              : cls
+                ? 'Detected'
+                : 'Not detected'}{' '}
           · {when}
         </Text>
         {item.media.byteSize != null ? (
@@ -382,6 +392,8 @@ const styles = StyleSheet.create({
   videoThumb: {
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: '#1A1D24',
+    gap: 6,
   },
   videoBadge: {
     color: colors.white,
@@ -389,17 +401,22 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     fontSize: 14,
   },
+  frameBadge: {
+    color: colors.primary,
+    fontFamily: fonts.mono,
+    fontSize: 11,
+  },
   cardMeta: {
     padding: 10,
     gap: 2,
   },
   cardTitle: {
-    color: colors.onSurface,
+    color: colors.white,
     fontFamily: fonts.sansMd,
     fontSize: 13,
   },
   cardSub: {
-    color: colors.muted,
+    color: '#C8CDD6',
     fontFamily: fonts.mono,
     fontSize: 11,
   },

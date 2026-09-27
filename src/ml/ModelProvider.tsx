@@ -34,9 +34,17 @@ type AppModelContextValue = {
     uri: string,
     detections: YoloDetection[],
   ) => Promise<string>;
+  annotateVideoUri: (
+    uri: string,
+    frameReports: Array<{ atMs: number; detections: YoloDetection[] }>,
+    confThresh: number,
+  ) => Promise<string>;
 };
 
 const AppModelContext = createContext<AppModelContextValue | null>(null);
+
+/** Must match Kotlin INPUT_SIZE for warm-up letterbox path. */
+const WARMUP_SIZE = 480;
 
 function logTensorReport(report: ModelTensorReport, label: string) {
   console.log(`[${label}] model loaded`);
@@ -70,7 +78,8 @@ function logTensorReport(report: ModelTensorReport, label: string) {
 }
 
 /**
- * Loads native YOLOv8n (LiteRT Expo module) once at startup.
+ * Loads native YOLO (LiteRT) once after first paint, then warms up inference
+ * so the first live/SNAP frame does not pay Interpreter init cost.
  */
 export function ModelProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<ModelState>('loading');
@@ -80,31 +89,66 @@ export function ModelProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      if (!ExpoYoloTflite.isSupported()) {
-        if (!cancelled) {
-          setState('error');
-          setError(new Error('ExpoYoloTflite is not supported on this platform'));
+    const t0 = Date.now();
+
+    // Defer until after first paint so splash / login are not fighting model I/O.
+    const timer = setTimeout(() => {
+      void (async () => {
+        if (!ExpoYoloTflite.isSupported()) {
+          if (!cancelled) {
+            setState('error');
+            setError(new Error('ExpoYoloTflite is not supported on this platform'));
+          }
+          return;
         }
-        return;
-      }
-      try {
-        setState('loading');
-        const report = await ExpoYoloTflite.loadModel();
-        if (cancelled) return;
-        setTensors(report);
-        setState('loaded');
-        setError(undefined);
-        logTensorReport(report, 'YOLOv8n Int8 (native)');
-      } catch (e) {
-        if (cancelled) return;
-        console.error('Failed to load native YOLO', e);
-        setState('error');
-        setError(e instanceof Error ? e : new Error(String(e)));
-      }
-    })();
+        try {
+          setState('loading');
+          console.log('[MODEL] load start');
+          const report = await ExpoYoloTflite.loadModel();
+          if (cancelled) return;
+          console.log(`[MODEL] load done in ${Date.now() - t0}ms`, {
+            usingGpu: report.usingGpu,
+            inputShape: report.inputShape,
+            outputShape: report.outputShape,
+          });
+          setTensors(report);
+          logTensorReport(report, 'YOLOv8 day-colour (native)');
+
+          // Force tensor alloc / graph compile off the critical UI path.
+          const dummyPixels = new Uint8Array(WARMUP_SIZE * WARMUP_SIZE * 3);
+          const t1 = Date.now();
+          try {
+            await ExpoYoloTflite.detectRgb(
+              dummyPixels,
+              WARMUP_SIZE,
+              WARMUP_SIZE,
+              WARMUP_SIZE * 3,
+              3,
+              false,
+            );
+            if (!cancelled) {
+              console.log(`[MODEL] warm-up done in ${Date.now() - t1}ms`);
+            }
+          } catch (warmErr) {
+            console.warn('[MODEL] warm-up skipped:', warmErr);
+          }
+
+          if (cancelled) return;
+          // Mark loaded only after warm-up so the first live frame is fast.
+          setState('loaded');
+          setError(undefined);
+        } catch (e) {
+          if (cancelled) return;
+          console.error('[MODEL] failed:', e);
+          setState('error');
+          setError(e instanceof Error ? e : new Error(String(e)));
+        }
+      })();
+    }, 100);
+
     return () => {
       cancelled = true;
+      clearTimeout(timer);
     };
   }, []);
 
@@ -121,6 +165,8 @@ export function ModelProvider({ children }: { children: ReactNode }) {
         ExpoYoloTflite.detectRgb(pixels, width, height, stride, channels, isBgra),
       annotateImageUri: (uri, detections) =>
         ExpoYoloTflite.annotateImageUri(uri, detections),
+      annotateVideoUri: (uri, frameReports, confThresh) =>
+        ExpoYoloTflite.annotateVideoUri(uri, frameReports, confThresh),
     };
   }, [state, error, tensors, isSupported]);
 

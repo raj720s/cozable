@@ -1,9 +1,9 @@
 import {
-  CONFIDENCE_THRESHOLD,
-  DAY_COLOURS,
-  type CaptureMedia,
-  type DayColour,
-  type TrayDetection,
+    CONFIDENCE_THRESHOLD,
+    DAY_COLOURS,
+    type CaptureMedia,
+    type DayColour,
+    type TrayDetection,
 } from '../types';
 
 /** Deterministic-ish dummy detections for summary UI while live ML is paused. */

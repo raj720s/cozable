@@ -1,3 +1,4 @@
+import { AppIcon } from '@/components/AppIcon';
 import { useAppModel, type YoloDetection } from '@/ml/ModelProvider';
 import {
   EMPTY_PREDICTION,
@@ -5,7 +6,14 @@ import {
 } from '@/ml/prediction';
 import { useTensorDebug } from '@/ml/useTensorDebug';
 import { useScanStore } from '@/store/scanStore';
-import { CLASS_COLORS_BY_ID, colors, fonts } from '@/theme/scanner';
+import { colors, fonts } from '@/theme/scanner';
+import { CONFIDENCE_THRESHOLD, type StoredYoloDetection, type VideoFrameReport } from '@/types';
+import {
+  LabelTracker,
+  trackedToStoredYolo,
+  trackedToTrayDetections,
+  yoloToTrayDetections,
+} from '@/utils/labelTracker';
 import { useIsFocused, useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -15,6 +23,7 @@ import {
   Linking,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   useWindowDimensions,
   View,
@@ -40,13 +49,29 @@ import { createSynchronizable, scheduleOnRN } from 'react-native-worklets';
 
 /** Cap live YOLO to ~10 Hz (VisionCamera v5 has no runAtTargetFps helper). */
 const INFER_INTERVAL_MS = 100;
+/** While REC is on, sample detection snapshots into the video report. */
+const VIDEO_SAMPLE_INTERVAL_MS = 500;
 
 /** Inference-only frame size — preview stays full quality via Camera view. */
 const INFER_RESOLUTION = { width: 320, height: 240 };
 
 const EMPTY_DETECTIONS: YoloDetection[] = [];
 
-const CLASS_COLORS = CLASS_COLORS_BY_ID;
+/** 4.3 — green = above threshold, amber = below. */
+const BOX_GREEN = '#22C55E';
+const BOX_AMBER = '#F59E0B';
+
+function toStoredDets(dets: YoloDetection[]): StoredYoloDetection[] {
+  return dets.map((d) => ({
+    x: d.x,
+    y: d.y,
+    width: d.width,
+    height: d.height,
+    classId: d.classId,
+    confidence: d.confidence,
+    label: d.label,
+  }));
+}
 
 function toFileUri(path: string): string {
   if (path.startsWith('file://') || path.startsWith('content://')) return path;
@@ -97,6 +122,8 @@ export default function CameraScreen() {
   const router = useRouter();
   const params = useLocalSearchParams();
   const expectedCountParam = parseInt(params.expectedCount as string, 10);
+  const rescanIndices = typeof params.rescanIndices === 'string' ? params.rescanIndices : '';
+  const isRescan = rescanIndices.length > 0;
   const isFocused = useIsFocused();
 
   const setExpectedCount = useScanStore((s) => s.setExpectedCount);
@@ -118,7 +145,7 @@ export default function CameraScreen() {
     canRequestPermission: canRequestMic,
   } = useMicrophonePermission();
 
-  const { state: modelState, isLoaded, detectImageUri, detectRgb, annotateImageUri } =
+  const { state: modelState, isLoaded, detectImageUri, detectRgb, annotateImageUri, annotateVideoUri } =
     useAppModel();
 
   useEffect(() => {
@@ -138,8 +165,19 @@ export default function CameraScreen() {
   const [frameCount, setFrameCount] = useState(0);
   const [prediction, setPrediction] = useState<ClassificationResult>(EMPTY_PREDICTION);
   const [detections, setDetections] = useState<YoloDetection[]>(EMPTY_DETECTIONS);
+  const [distinctCount, setDistinctCount] = useState(0);
+  const [countDraft, setCountDraft] = useState(String(expectedCount > 0 ? expectedCount : 9));
+  const [countConfirmed, setCountConfirmed] = useState(
+    (!Number.isNaN(expectedCountParam) && expectedCountParam > 0) || isRescan,
+  );
   const predictionRef = useRef(prediction);
   const detectionsRef = useRef<YoloDetection[]>(EMPTY_DETECTIONS);
+  const isRecordingRef = useRef(false);
+  const recordingStartedAtRef = useRef(0);
+  const lastVideoSampleAtRef = useRef(0);
+  const videoFrameReportsRef = useRef<VideoFrameReport[]>([]);
+  const trackerRef = useRef(new LabelTracker());
+  const distinctRef = useRef(trackerRef.current.getDistinct());
   // Live frame dimensions from the camera. Updated per inference (ref, not state,
   // to avoid re-render churn). Default matches INFER_RESOLUTION.
   const frameDimsRef = useRef({ w: INFER_RESOLUTION.width, h: INFER_RESOLUTION.height });
@@ -218,6 +256,26 @@ export default function CameraScreen() {
               Math.abs(prev.score - top.confidence) >= 0.1
             ) {
               logPrediction(topDetectionAsPrediction(dets), 'live', false);
+            }
+          }
+
+          // Temporal de-dupe (4.2) — same physical label across frames counts once.
+          const t0 = recordingStartedAtRef.current;
+          const atMs = t0 > 0 ? Math.max(0, Date.now() - t0) : 0;
+          const distinct = trackerRef.current.update(dets, atMs);
+          distinctRef.current = distinct;
+          setDistinctCount(distinct.length);
+
+          // Sample frame-wise reports while REC is active (for video audit).
+          if (isRecordingRef.current) {
+            const now = Date.now();
+            if (now - lastVideoSampleAtRef.current >= VIDEO_SAMPLE_INTERVAL_MS) {
+              lastVideoSampleAtRef.current = now;
+              videoFrameReportsRef.current.push({
+                atMs: Math.max(0, now - recordingStartedAtRef.current),
+                frameIndex: videoFrameReportsRef.current.length,
+                detections: toStoredDets(dets),
+              });
             }
           }
         } catch (error) {
@@ -305,10 +363,35 @@ export default function CameraScreen() {
   useEffect(() => {
     if (!Number.isNaN(expectedCountParam) && expectedCountParam > 0) {
       setExpectedCount(expectedCountParam);
+      setCountDraft(String(expectedCountParam));
+      setCountConfirmed(true);
+    } else if (isRescan) {
+      const n = rescanIndices.split(',').filter(Boolean).length;
+      const count = Math.max(1, n);
+      setExpectedCount(count);
+      setCountDraft(String(count));
+      setCountConfirmed(true);
     }
     startScan();
     return () => stopScan();
-  }, [expectedCountParam, setExpectedCount, startScan, stopScan]);
+  }, [
+    expectedCountParam,
+    isRescan,
+    rescanIndices,
+    setExpectedCount,
+    startScan,
+    stopScan,
+  ]);
+
+  const confirmExpectedCount = useCallback(() => {
+    const n = parseInt(countDraft, 10);
+    if (Number.isNaN(n) || n < 1 || n > 99) {
+      Alert.alert('Expected trays', 'Enter a tray count between 1 and 99.');
+      return;
+    }
+    setExpectedCount(n);
+    setCountConfirmed(true);
+  }, [countDraft, setExpectedCount]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (state) => {
@@ -443,6 +526,7 @@ export default function CameraScreen() {
       }
 
       const snapPrediction = topDetectionAsPrediction(dets);
+      const trays = yoloToTrayDetections(dets);
       await completeCapture(
         {
           kind: 'photo',
@@ -454,6 +538,8 @@ export default function CameraScreen() {
         expectedCount,
         snapPrediction.index >= 0 ? snapPrediction : null,
         dets.length > 0 ? dets : null,
+        null,
+        trays,
       );
 
       router.replace({
@@ -503,27 +589,70 @@ export default function CameraScreen() {
     }
 
     setIsRecording(true);
+    isRecordingRef.current = true;
+    recordingStartedAtRef.current = Date.now();
+    lastVideoSampleAtRef.current = 0;
+    videoFrameReportsRef.current = [];
+    trackerRef.current.reset();
+    distinctRef.current = [];
+    setDistinctCount(0);
     try {
       const recorder = await videoOutput.createRecorder({});
       recorderRef.current = recorder;
       await recorder.startRecording(
         (filePath) => {
           setIsRecording(false);
+          isRecordingRef.current = false;
           recorderRef.current = null;
           setTorchMode('off');
           void (async () => {
-            // Video file itself is never run through YOLO — only attach last live boxes.
             const liveDets = detectionsRef.current;
+            const frameReports = videoFrameReportsRef.current.slice();
+            const distinct = distinctRef.current.slice();
+            const trays = trackedToTrayDetections(distinct);
+            const yoloForStore =
+              distinct.length > 0
+                ? trackedToStoredYolo(distinct)
+                : liveDets.length > 0
+                  ? toStoredDets(liveDets)
+                  : null;
             const snapPrediction = topDetectionAsPrediction(liveDets);
+            console.log(
+              '[REC] saved video +',
+              frameReports.length,
+              'frame reports,',
+              trays.length,
+              'distinct labels',
+            );
+
+            // Burn live overlay boxes into a copy of the MP4 (green/amber).
+            let savePath = filePath;
+            if (isLoaded && frameReports.length > 0) {
+              try {
+                console.log('[REC] burning overlays into video…');
+                savePath = await annotateVideoUri(
+                  toFileUri(filePath),
+                  frameReports,
+                  CONFIDENCE_THRESHOLD,
+                );
+                console.log('[REC] annotated video →', savePath);
+              } catch (e) {
+                console.warn('[REC] annotateVideoUri failed — keeping raw video', e);
+                savePath = filePath;
+              }
+            }
+
             await completeCapture(
               {
                 kind: 'video',
-                path: filePath,
+                path: savePath,
                 capturedAt: Date.now(),
               },
               expectedCount,
               snapPrediction.index >= 0 ? snapPrediction : null,
-              liveDets.length > 0 ? liveDets : null,
+              yoloForStore,
+              frameReports,
+              trays,
             );
             router.replace({
               pathname: '/summary',
@@ -533,12 +662,14 @@ export default function CameraScreen() {
         },
         (error: Error) => {
           setIsRecording(false);
+          isRecordingRef.current = false;
           recorderRef.current = null;
           Alert.alert('Recording Failure', error.message);
         },
       );
     } catch (error) {
       setIsRecording(false);
+      isRecordingRef.current = false;
       recorderRef.current = null;
       const message = error instanceof Error ? error.message : 'Could not start recording.';
       Alert.alert('Recording Error', message);
@@ -567,6 +698,46 @@ export default function CameraScreen() {
     setTorchMode('off');
     setCameraPosition((prev) => (prev === 'back' ? 'front' : 'back'));
   };
+
+  if (!countConfirmed) {
+    return (
+      <View style={styles.fallbackContainer}>
+        <Text style={styles.fallbackTitle}>Expected tray count</Text>
+        <Text style={styles.fallbackText}>
+          How many day-colour labels are on this rack? Used for the live coverage check.
+        </Text>
+        <View style={styles.countRow}>
+          <TouchableOpacity
+            style={styles.countStep}
+            onPress={() =>
+              setCountDraft((v) => String(Math.max(1, (parseInt(v, 10) || 9) - 1)))
+            }
+          >
+            <Text style={styles.countStepText}>−</Text>
+          </TouchableOpacity>
+          <TextInput
+            style={styles.countInput}
+            keyboardType="number-pad"
+            value={countDraft}
+            onChangeText={setCountDraft}
+            maxLength={2}
+            selectTextOnFocus
+          />
+          <TouchableOpacity
+            style={styles.countStep}
+            onPress={() =>
+              setCountDraft((v) => String(Math.min(99, (parseInt(v, 10) || 9) + 1)))
+            }
+          >
+            <Text style={styles.countStepText}>+</Text>
+          </TouchableOpacity>
+        </View>
+        <TouchableOpacity style={styles.permissionButton} onPress={confirmExpectedCount}>
+          <Text style={styles.permissionButtonText}>Continue to camera</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
 
   if (!hasCameraPermission) {
     return (
@@ -645,12 +816,52 @@ export default function CameraScreen() {
 
   return (
     <View style={styles.container}>
-      {/*
-        Safe area keeps Camera + YOLO overlay out of status/home black bars.
-        Those insets stay pure black and are never part of the frame buffer
-        used for detectRgb / overlay mapping.
-      */}
       <SafeAreaView style={styles.safePreview} edges={['top', 'bottom']}>
+        {/* Top chrome — outside the live feed so detection area stays clear */}
+        <View style={styles.topChrome}>
+          <View style={styles.topLeft}>
+            <TouchableOpacity style={styles.hudIcon} onPress={() => router.back()}>
+              <AppIcon name="arrow-left" size={22} color={colors.white} />
+            </TouchableOpacity>
+            <View style={styles.scanBadge}>
+              <Text style={styles.scanBadgeText}>
+                {isRecording ? 'REC' : 'LIVE'} · {zoomLabel}×
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.detectPill}>
+            <View style={styles.detectDot} />
+            <Text style={styles.detectPillText}>
+              {distinctCount} of {expectedCount} DETECTED
+            </Text>
+          </View>
+
+          <View style={styles.topActions}>
+            <TouchableOpacity
+              style={[
+                styles.hudIcon,
+                torchMode === 'on' && styles.hudIconActive,
+                (!device.hasTorch || cameraPosition === 'front') && styles.hudIconDisabled,
+              ]}
+              onPress={toggleTorch}
+            >
+              <AppIcon
+                name={torchMode === 'on' ? 'flashlight' : 'flashlight-off'}
+                size={20}
+                color={colors.white}
+              />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.hudIcon} onPress={() => router.push('/gallery')}>
+              <AppIcon name="image-multiple" size={20} color={colors.white} />
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.hudIcon} onPress={toggleCameraPosition}>
+              <AppIcon name="camera-flip" size={20} color={colors.white} />
+            </TouchableOpacity>
+          </View>
+        </View>
+
+        {/* Live feed only — YOLO boxes may overlay here; no buttons */}
         <View
           style={styles.previewFrame}
           onLayout={(e) => {
@@ -680,12 +891,10 @@ export default function CameraScreen() {
             onError={handleSessionError}
           />
 
-          {/* YOLO live overlay — frame-normalized → preview-pixel transform */}
           <View style={styles.yoloOverlayRoot} pointerEvents="none">
             {detections.map((d, i) => {
               const { w: FW, h: FH } = frameDimsRef.current;
               const isFront = cameraPosition === 'front';
-              // Camera uses resizeMode="contain" — letterbox inside previewFrame
               const scale = Math.min(previewW / FW, previewH / FH);
               const scaledW = FW * scale;
               const scaledH = FH * scale;
@@ -704,7 +913,8 @@ export default function CameraScreen() {
 
               const drawW = Math.max(w, 60);
               const drawH = Math.max(h, 30);
-              const color = CLASS_COLORS[d.classId] ?? '#00FF00';
+              const high = d.confidence >= CONFIDENCE_THRESHOLD;
+              const color = high ? BOX_GREEN : BOX_AMBER;
 
               return (
                 <View
@@ -737,7 +947,7 @@ export default function CameraScreen() {
                       style={{ color: '#FFFFFF', fontSize: 14, fontWeight: 'bold' }}
                       numberOfLines={1}
                     >
-                      {d.label} {(d.confidence * 100).toFixed(1)}%
+                      {d.label} {(d.confidence * 100).toFixed(0)}%
                     </Text>
                   </View>
                 </View>
@@ -745,97 +955,82 @@ export default function CameraScreen() {
             })}
           </View>
 
-          <View style={styles.overlayContainer} pointerEvents="box-none">
-            <View style={styles.topRow}>
-              <View style={styles.topLeft}>
-                <TouchableOpacity style={styles.hudIcon} onPress={() => router.back()}>
-                  <Text style={styles.hudIconText}>←</Text>
-                </TouchableOpacity>
-                <View style={styles.scanBadge}>
-                  <Text style={styles.scanBadgeText}>Scan #01</Text>
-                </View>
-              </View>
-
-              <View style={styles.detectPill}>
-                <View style={styles.detectDot} />
-                <Text style={styles.detectPillText}>
-                  {detections.length} / {expectedCount} DETECTED
-                </Text>
-              </View>
-
-              <View style={styles.topActions}>
-                <TouchableOpacity
-                  style={[
-                    styles.hudIcon,
-                    torchMode === 'on' && styles.hudIconActive,
-                    (!device.hasTorch || cameraPosition === 'front') &&
-                      styles.hudIconDisabled,
-                  ]}
-                  onPress={toggleTorch}
-                >
-                  <Text style={styles.hudIconText}>{torchMode === 'on' ? '✦' : '✧'}</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={styles.hudIcon}
-                  onPress={() => router.push('/gallery')}
-                >
-                  <Text style={styles.hudIconText}>⚙</Text>
-                </TouchableOpacity>
-              </View>
+          {isRescan ? (
+            <View style={styles.rescanBanner} pointerEvents="none">
+              <Text style={styles.rescanBannerText}>
+                Re-scan flagged only · expected {expectedCount}
+              </Text>
             </View>
+          ) : null}
 
-            <View style={styles.midRow} pointerEvents="box-none">
-              <View style={styles.detectionCard}>
-                <View style={styles.modelRow}>
-                  {!cameraStarted || modelState === 'loading' ? (
-                    <ActivityIndicator color={colors.primary} size="small" />
-                  ) : null}
-                  <Text style={styles.modelStatus}>
-                    {!cameraStarted ? 'Starting camera…' : modelStatusLabel}
-                  </Text>
-                </View>
-                <Text style={styles.detectionMeta}>{frameMetaLabel}</Text>
-                <Text style={styles.predictionText}>{predictionLabel}</Text>
-              </View>
+          {isRecording ? (
+            <View style={styles.recBanner} pointerEvents="none">
+              <View style={styles.recDotLive} />
+              <Text style={styles.recBannerText}>
+                SWEEP · {distinctCount} of {expectedCount} distinct
+              </Text>
             </View>
+          ) : null}
+        </View>
 
-            {detections.some((d) => d.confidence < 0.85) ? (
-              <View style={styles.attentionBar}>
-                <Text style={styles.attentionText}>
-                  Low-confidence label — pan closer or SNAP for a still capture.
-                </Text>
-              </View>
-            ) : null}
-
-            <View style={styles.bottomRow}>
-              <TouchableOpacity style={styles.utilityBtn} onPress={toggleFlash}>
-                <Text style={styles.utilityBtnText}>
-                  {flashMode === 'off' ? '⚡' : '⚡+'}
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.stopScanBtn, capturing && styles.disabled]}
-                onPress={() => void handleCapturePhoto()}
-                disabled={capturing}
-              >
-                <Text style={styles.stopScanText}>
-                  {capturing ? 'CAPTURING…' : 'SNAP & REVIEW'}
-                </Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={[styles.utilityBtn, isRecording && styles.utilityBtnRec]}
-                onPress={() => void handleToggleRecording()}
-              >
-                <View style={isRecording ? styles.stopSquare : styles.recordCircle} />
-              </TouchableOpacity>
+        {/* Bottom chrome — outside the live feed */}
+        <View style={styles.bottomChrome}>
+          <View style={styles.detectionCard}>
+            <View style={styles.modelRow}>
+              {!cameraStarted || modelState === 'loading' ? (
+                <ActivityIndicator color={colors.primary} size="small" />
+              ) : null}
+              <Text style={styles.modelStatus}>
+                {!cameraStarted ? 'Starting camera…' : modelStatusLabel}
+              </Text>
             </View>
+            <Text style={styles.detectionMeta}>{frameMetaLabel}</Text>
+            <Text style={styles.predictionText}>{predictionLabel}</Text>
+          </View>
 
-            <TouchableOpacity style={styles.doneLink} onPress={handleFinish}>
-              <Text style={styles.doneLinkText}>STOP SCAN · DONE</Text>
+          {detections.some((d) => d.confidence < CONFIDENCE_THRESHOLD) ? (
+            <View style={styles.attentionBar}>
+              <Text style={styles.attentionText}>
+                Amber box = below {Math.round(CONFIDENCE_THRESHOLD * 100)}% — slow down or re-angle.
+              </Text>
+            </View>
+          ) : null}
+
+          <View style={styles.bottomRow}>
+            <TouchableOpacity
+              style={[styles.utilityBtn, capturing && styles.disabled]}
+              onPress={() => void handleCapturePhoto()}
+              disabled={capturing || isRecording}
+            >
+              <AppIcon name="camera" size={22} color={colors.white} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={[styles.stopScanBtn, isRecording && styles.stopScanBtnRec]}
+              onPress={() => void handleToggleRecording()}
+            >
+              <AppIcon
+                name={isRecording ? 'stop' : 'record-circle'}
+                size={22}
+                color={colors.onPrimary}
+              />
+              <Text style={styles.stopScanText}>
+                {isRecording ? 'STOP SWEEP' : 'START SWEEP'}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.utilityBtn} onPress={toggleFlash}>
+              <AppIcon
+                name={flashMode === 'off' ? 'flash-off' : 'flash'}
+                size={22}
+                color={colors.white}
+              />
             </TouchableOpacity>
           </View>
+
+          <TouchableOpacity style={styles.doneLink} onPress={handleFinish}>
+            <Text style={styles.doneLinkText}>CANCEL · BACK</Text>
+          </TouchableOpacity>
         </View>
       </SafeAreaView>
     </View>
@@ -851,6 +1046,27 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#000000',
   },
+  topChrome: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: 10,
+    backgroundColor: '#0A0B0E',
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  bottomChrome: {
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 8,
+    gap: 10,
+    backgroundColor: '#0A0B0E',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
   previewFrame: {
     flex: 1,
     backgroundColor: '#000000',
@@ -864,6 +1080,30 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     zIndex: 999,
+  },
+  recBanner: {
+    position: 'absolute',
+    top: 10,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(239,68,68,0.85)',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    zIndex: 1000,
+  },
+  recDotLive: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#FFF',
+  },
+  recBannerText: {
+    color: '#FFFFFF',
+    fontFamily: fonts.monoSemi,
+    fontSize: 11,
   },
   fallbackContainer: {
     flex: 1,
@@ -965,7 +1205,7 @@ const styles = StyleSheet.create({
   scanBadgeText: {
     fontFamily: fonts.monoSemi,
     fontSize: 12,
-    color: colors.onSurface,
+    color: colors.white,
   },
   detectPill: {
     flexDirection: 'row',
@@ -987,8 +1227,7 @@ const styles = StyleSheet.create({
   detectPillText: {
     fontFamily: fonts.monoSemi,
     fontSize: 11,
-    color: colors.onSurface,
-    letterSpacing: 0.4,
+    color: colors.white,
   },
   midRow: {
     flexDirection: 'row',
@@ -1018,7 +1257,7 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   detectionMeta: {
-    color: colors.muted,
+    color: colors.onSurface,
     fontFamily: fonts.mono,
     fontSize: 11,
   },
@@ -1071,12 +1310,62 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primaryContainer,
     alignItems: 'center',
     justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  stopScanBtnRec: {
+    backgroundColor: colors.error,
   },
   stopScanText: {
     fontFamily: fonts.sansBold,
-    fontSize: 16,
-    color: colors.white,
+    fontSize: 15,
+    color: colors.onPrimary,
     letterSpacing: 0.6,
+  },
+  countRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 16,
+    marginVertical: 20,
+  },
+  countStep: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: colors.surfaceContainerHigh,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  countStepText: {
+    fontSize: 28,
+    color: colors.onSurface,
+    fontFamily: fonts.sansBold,
+  },
+  countInput: {
+    width: 88,
+    height: 56,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    backgroundColor: colors.surfaceContainerLowest,
+    color: colors.onSurface,
+    fontFamily: fonts.monoBold,
+    fontSize: 28,
+    textAlign: 'center',
+  },
+  rescanBanner: {
+    position: 'absolute',
+    top: 12,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(245, 158, 11, 0.92)',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  rescanBannerText: {
+    color: '#111',
+    fontFamily: fonts.sansMd,
+    fontSize: 13,
   },
   doneLink: {
     alignItems: 'center',
@@ -1085,8 +1374,9 @@ const styles = StyleSheet.create({
   doneLinkText: {
     fontFamily: fonts.monoSemi,
     fontSize: 12,
-    color: colors.onSurfaceVariant,
+    color: colors.white,
     letterSpacing: 1,
+    opacity: 0.85,
   },
   disabled: {
     opacity: 0.6,

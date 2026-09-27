@@ -79,5 +79,11 @@ export const fonts = {
   monoBold: 'JetBrainsMono_700Bold',
 } as const;
 
+/** Bundled brand art (Metro require — not Metro-bundled .tflite). */
+export const images = {
+  logo: require('../../assets/logo.png'),
+  gradient: require('../../assets/gradient.png'),
+} as const;
+
 /** UI verification threshold (stitch summary uses 85%). */
 export const VERIFY_THRESHOLD = 0.85;

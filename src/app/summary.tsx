@@ -3,6 +3,8 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useEffect, useMemo } from 'react';
 import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { AppIcon } from '../components/AppIcon';
+import { CaptureVideoPlayer } from '../components/CaptureVideoPlayer';
 import { useScanStore } from '../store/scanStore';
 import {
   CLASS_COLORS_BY_ID,
@@ -15,6 +17,7 @@ import {
   type StoredYoloDetection,
   type TrayDetection,
 } from '../types';
+import { expiryForClassId, shortDayColourLabel } from '../utils/dayColourCalendar';
 import { describeCapture, toMediaUri } from '../utils/scanHelpers';
 
 type ListItem =
@@ -22,12 +25,7 @@ type ListItem =
   | { kind: 'tray'; det: TrayDetection };
 
 function shortLabel(label: string): string {
-  // "Blue : Monday" → "Blue (Mon)"
-  const parts = label.split(':').map((s) => s.trim());
-  if (parts.length < 2) return label;
-  const colour = parts[0];
-  const day = parts[1].slice(0, 3);
-  return `${colour} (${day})`;
+  return shortDayColourLabel(label);
 }
 
 function YoloTrayRow({
@@ -41,6 +39,7 @@ function YoloTrayRow({
 }) {
   const color = CLASS_COLORS_BY_ID[det.classId] ?? colors.primary;
   const pct = (det.confidence * 100).toFixed(0);
+  const expiry = expiryForClassId(det.classId);
   return (
     <View style={[styles.trayRow, flagged && styles.trayRowFlagged]}>
       <View style={[styles.trayStrip, { backgroundColor: color }]} />
@@ -52,7 +51,8 @@ function YoloTrayRow({
           </Text>
         </View>
         <Text style={styles.traySub}>
-          BAY POS {String(index + 1).padStart(2, '0')} · class {det.classId}
+          {expiry?.deliveryLabel ?? `class ${det.classId}`} ·{' '}
+          {expiry?.expiresLabel ?? '—'}
         </Text>
         {flagged ? (
           <Text style={styles.flagHint}>Below {Math.round(VERIFY_THRESHOLD * 100)}% threshold</Text>
@@ -70,17 +70,42 @@ function YoloTrayRow({
   );
 }
 
-function DummyTrayRow({ det }: { det: TrayDetection }) {
+function DistinctTrayRow({ det }: { det: TrayDetection }) {
   const high = det.confidence >= CONFIDENCE_THRESHOLD;
+  const ts =
+    det.frameTimestampMs != null
+      ? `${(det.frameTimestampMs / 1000).toFixed(1)}s`
+      : '—';
   return (
     <View style={[styles.trayRow, !high && styles.trayRowFlagged]}>
       <View style={styles.trayMeta}>
-        <Text style={styles.trayTitle}>
-          #{det.sequence} {det.colour}
+        <View style={styles.trayTitleRow}>
+          <Text style={styles.trayIndex}>#{det.sequence}</Text>
+          <Text style={styles.trayTitle} numberOfLines={1}>
+            {det.colour}
+            {det.modelLabel ? ` · ${shortLabel(det.modelLabel)}` : ''}
+          </Text>
+        </View>
+        <Text style={styles.traySub}>
+          First seen @ {ts}
+          {!high ? ` · below ${Math.round(CONFIDENCE_THRESHOLD * 100)}%` : ''}
         </Text>
-        <Text style={styles.traySub}>Dummy audit row</Text>
+        {!high ? (
+          <Text style={styles.flagHint}>
+            Below {Math.round(VERIFY_THRESHOLD * 100)}% threshold — re-scan
+          </Text>
+        ) : null}
       </View>
-      <Text style={styles.trayPct}>{(det.confidence * 100).toFixed(0)}%</Text>
+      <View style={styles.trayRight}>
+        <Text style={[styles.trayPct, !high && styles.trayPctFlagged]}>
+          {(det.confidence * 100).toFixed(0)}%
+        </Text>
+        <View style={[styles.badge, high ? styles.badgeOk : styles.badgeFlagged]}>
+          <Text style={[styles.badgeText, !high && styles.badgeTextFlagged]}>
+            {high ? 'Verified' : 'Flagged'}
+          </Text>
+        </View>
+      </View>
     </View>
   );
 }
@@ -110,36 +135,66 @@ export default function SummaryScreen() {
   const captureMedia = useScanStore((s) => s.captureMedia);
   const openGalleryItem = useScanStore((s) => s.openGalleryItem);
   const resetScan = useScanStore((s) => s.resetScan);
+  const gallery = useScanStore((s) => s.gallery);
+  const activeGalleryId = useScanStore((s) => s.activeGalleryId);
+  const updateGalleryVideoReports = useScanStore((s) => s.updateGalleryVideoReports);
+  const setYoloDetections = useScanStore((s) => s.setYoloDetections);
 
   useEffect(() => {
     if (galleryId) openGalleryItem(galleryId);
   }, [galleryId, openGalleryItem]);
 
+  const videoFrameReports = useMemo(() => {
+    const id = galleryId ?? activeGalleryId;
+    if (!id) return [];
+    return gallery.find((g) => g.id === id)?.videoFrameReports ?? [];
+  }, [activeGalleryId, gallery, galleryId]);
+
   const yoloCount = yoloDetections.length;
-  const sourceCount = yoloCount > 0 ? yoloCount : detections.length;
+  /** Prefer de-duped sweep labels (4.2) when the capture produced them. */
+  const hasDistinctTrays =
+    detections.length > 0 &&
+    detections.some((d) => d.modelLabel != null || d.frameTimestampMs != null);
+  const sourceCount = hasDistinctTrays
+    ? detections.length
+    : yoloCount > 0
+      ? yoloCount
+      : detections.length;
   const coverage =
     expectedCount > 0 ? Math.min(100, Math.round((sourceCount / expectedCount) * 100)) : 0;
 
   const flaggedYolo = yoloDetections.filter((d) => d.confidence < CONFIDENCE_THRESHOLD);
-  const flaggedDummy = detections.filter((d) => d.confidence < CONFIDENCE_THRESHOLD);
-  const flaggedCount = yoloCount > 0 ? flaggedYolo.length : flaggedDummy.length;
+  const flaggedTrays = detections.filter((d) => d.confidence < CONFIDENCE_THRESHOLD);
+  const flaggedCount = hasDistinctTrays
+    ? flaggedTrays.length
+    : yoloCount > 0
+      ? flaggedYolo.length
+      : flaggedTrays.length;
   const verifiedCount = Math.max(0, sourceCount - flaggedCount);
   const yoloCounts = useMemo(() => countByLabel(yoloDetections), [yoloDetections]);
 
-  const listData: ListItem[] =
-    yoloCount > 0
+  const listData: ListItem[] = hasDistinctTrays
+    ? detections.map((det) => ({ kind: 'tray' as const, det }))
+    : yoloCount > 0
       ? yoloDetections.map((det, index) => ({ kind: 'yolo' as const, det, index }))
       : detections.map((det) => ({ kind: 'tray' as const, det }));
 
   const handleRescanFlagged = () => {
-    const indices =
-      yoloCount > 0
+    const flagged = hasDistinctTrays
+      ? flaggedTrays
+      : yoloCount > 0
+        ? flaggedYolo
+        : flaggedTrays;
+    const indices = hasDistinctTrays
+      ? flaggedTrays.map((d) => d.sequence).join(',')
+      : yoloCount > 0
         ? flaggedYolo.map((_, i) => i + 1).join(',')
-        : flaggedDummy.map((d) => d.sequence).join(',');
+        : flaggedTrays.map((d) => d.sequence).join(',');
+    const rescanExpected = Math.max(1, flagged.length);
     router.replace({
       pathname: '/camera',
       params: {
-        expectedCount: String(expectedCount),
+        expectedCount: String(rescanExpected),
         rescanIndices: indices,
       },
     });
@@ -151,7 +206,7 @@ export default function SummaryScreen() {
       return;
     }
     resetScan();
-    router.replace('/');
+    router.replace('/home');
   };
 
   const mediaUri = captureMedia ? toMediaUri(captureMedia.path) : null;
@@ -159,7 +214,21 @@ export default function SummaryScreen() {
     ? `#${galleryId.slice(-5).toUpperCase()}`
     : `#SCN-${String(expectedCount).padStart(5, '0')}`;
 
-  const topFlagged = yoloCount > 0 ? flaggedYolo[0] : null;
+  const topFlagged = hasDistinctTrays
+    ? flaggedTrays[0]
+      ? {
+          label: flaggedTrays[0].modelLabel ?? flaggedTrays[0].colour,
+          confidence: flaggedTrays[0].confidence,
+        }
+      : null
+    : yoloCount > 0 && flaggedYolo[0]
+      ? { label: flaggedYolo[0].label, confidence: flaggedYolo[0].confidence }
+      : flaggedTrays[0]
+        ? {
+            label: flaggedTrays[0].modelLabel ?? flaggedTrays[0].colour,
+            confidence: flaggedTrays[0].confidence,
+          }
+        : null;
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -288,6 +357,56 @@ export default function SummaryScreen() {
               </View>
             ) : null}
 
+            {captureMedia?.kind === 'video' && mediaUri ? (
+              <View style={styles.mediaCard}>
+                <Text style={styles.sectionTitle}>
+                  {describeCapture(captureMedia)} · {videoFrameReports.length} frame samples
+                </Text>
+                <CaptureVideoPlayer
+                  uri={mediaUri}
+                  style={styles.videoPreview}
+                  onScanComplete={(reports, lastDets) => {
+                    setYoloDetections(lastDets);
+                    const id = galleryId ?? activeGalleryId;
+                    if (id) {
+                      void updateGalleryVideoReports(id, reports, lastDets);
+                    }
+                  }}
+                />
+              </View>
+            ) : null}
+
+            {videoFrameReports.length > 0 ? (
+              <View style={styles.frameReportCard}>
+                <Text style={styles.sectionTitle}>Frame-wise detection report</Text>
+                <Text style={styles.frameReportHint}>
+                  Sampled ~every 500ms while REC was on. Open a row to see label counts for that
+                  moment.
+                </Text>
+                {videoFrameReports.map((fr) => {
+                  const counts = countByLabel(fr.detections);
+                  return (
+                    <View key={`fr-${fr.frameIndex}`} style={styles.frameRow}>
+                      <AppIcon name="filmstrip" size={16} color={colors.primary} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.frameRowTitle}>
+                          Frame #{fr.frameIndex + 1} · {(fr.atMs / 1000).toFixed(1)}s
+                        </Text>
+                        <Text style={styles.frameRowSub}>
+                          {fr.detections.length === 0
+                            ? 'No boxes'
+                            : counts
+                                .map((c) => `${c.count}× ${shortLabel(c.label)}`)
+                                .join(' · ')}
+                        </Text>
+                      </View>
+                      <Text style={styles.frameCount}>{fr.detections.length}</Text>
+                    </View>
+                  );
+                })}
+              </View>
+            ) : null}
+
             <View style={styles.sectionHead}>
               <Text style={styles.sectionTitle}>Detected Trays</Text>
               <Text style={styles.sectionMeta}>
@@ -304,12 +423,12 @@ export default function SummaryScreen() {
               flagged={item.det.confidence < CONFIDENCE_THRESHOLD}
             />
           ) : (
-            <DummyTrayRow det={item.det} />
+            <DistinctTrayRow det={item.det} />
           )
         }
         ListEmptyComponent={
           <Text style={styles.empty}>
-            No detections yet. Capture a SNAP on the camera screen to run YOLO recognition.
+            No distinct labels yet. Start a video sweep and pan across the rack.
           </Text>
         }
         ListFooterComponent={
@@ -317,8 +436,8 @@ export default function SummaryScreen() {
             {flaggedCount > 0 && !fromGallery ? (
               <TouchableOpacity style={styles.rescanBtn} onPress={handleRescanFlagged}>
                 <Text style={styles.rescanBtnText}>
-                  REVIEW & RE-SCAN
-                  {topFlagged ? ` (${shortLabel(topFlagged.label)})` : ''}
+                  RE-SCAN FLAGGED ({flaggedCount})
+                  {topFlagged ? ` · ${shortLabel(topFlagged.label)}` : ''}
                 </Text>
               </TouchableOpacity>
             ) : null}
@@ -545,9 +664,52 @@ const styles = StyleSheet.create({
   },
   mediaPreview: {
     width: '100%',
-    height: 180,
+    height: 360,
     borderRadius: 8,
     backgroundColor: colors.surfaceContainerLowest,
+  },
+  videoPreview: {
+    width: '100%',
+    height: 400,
+    borderRadius: 8,
+  },
+  frameReportCard: {
+    backgroundColor: colors.surfaceContainer,
+    borderRadius: 12,
+    padding: 12,
+    gap: 8,
+  },
+  frameReportHint: {
+    fontFamily: fonts.sans,
+    fontSize: 12,
+    color: '#C8CDD6',
+    lineHeight: 18,
+  },
+  frameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+  },
+  frameRowTitle: {
+    fontFamily: fonts.sansMd,
+    fontSize: 13,
+    color: colors.white,
+  },
+  frameRowSub: {
+    fontFamily: fonts.mono,
+    fontSize: 11,
+    color: '#C8CDD6',
+    marginTop: 2,
+  },
+  frameCount: {
+    fontFamily: fonts.sansBold,
+    fontSize: 16,
+    color: colors.primary,
+    minWidth: 28,
+    textAlign: 'right',
   },
   sectionHead: {
     flexDirection: 'row',
@@ -558,7 +720,7 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontFamily: fonts.sansBold,
     fontSize: 16,
-    color: colors.onSurface,
+    color: colors.white,
   },
   sectionMeta: {
     fontFamily: fonts.mono,

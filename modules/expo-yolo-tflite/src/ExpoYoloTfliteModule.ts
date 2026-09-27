@@ -20,6 +20,15 @@ declare class ExpoYoloTfliteModule extends NativeModule {
     uri: string,
     detections: YoloDetection[],
   ): Promise<string>;
+  /**
+   * Burn detection overlays into a video. frameReports: [{ atMs, detections }].
+   * Returns filesystem path of annotated MP4.
+   */
+  annotateVideoUri(
+    uri: string,
+    frameReports: Array<{ atMs: number; detections: YoloDetection[] }>,
+    confThresh: number,
+  ): Promise<string>;
   unload(): Promise<void>;
 }
 

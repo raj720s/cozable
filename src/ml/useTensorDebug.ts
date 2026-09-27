@@ -3,11 +3,8 @@ import ExpoYoloTflite from 'expo-yolo-tflite';
 import { useAppModel } from './ModelProvider';
 
 /**
- * Temporary: logs model tensor shapes to Metro once the native model is loaded.
- * Expected (day-colour float32 export):
- *   inputShape  [1, 3, 640, 640]
- *   outputShape [1, 11, 8400]
- *   numClasses  7
+ * Logs tensor shapes once the native model is already loaded.
+ * Must never trigger loadModel / ensureInterpreter — getTensorInfo is read-only.
  */
 export function useTensorDebug() {
   const { isLoaded } = useAppModel();
@@ -15,6 +12,8 @@ export function useTensorDebug() {
   useEffect(() => {
     if (!isLoaded) return;
     try {
+      // Sync read only — Kotlin getTensorInfo does not call ensureInterpreter().
+      if (!ExpoYoloTflite.isLoaded()) return;
       const info = ExpoYoloTflite.getTensorInfo();
       console.log(
         'TENSORS:',
@@ -32,6 +31,7 @@ export function useTensorDebug() {
         ),
       );
     } catch (e) {
+      // Model not loaded yet or getTensorInfo threw — never force a load.
       console.warn('useTensorDebug: getTensorInfo failed', e);
     }
   }, [isLoaded]);

@@ -21,20 +21,25 @@ import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.exp
 import kotlin.math.max
 import kotlin.math.min
 
 class ExpoYoloTfliteModule : Module() {
+  @Volatile
   private var interpreter: Interpreter? = null
   private var gpuDelegate: GpuDelegate? = null
   private var usingGpu = false
+  private val interpreterLock = Any()
+  private val loggedFirstDetectRgb = AtomicBoolean(false)
 
   private val context
     get() = requireNotNull(appContext.reactContext)
 
   companion object {
-    private const val MODEL_ASSET = "best_final.tflite"
+    private const val MODEL_ASSET = "best_int8_480.tflite"
     private const val INPUT_SIZE = 480
     private const val NUM_CLASSES = 7
     private const val NUM_ATTRS = 4 + NUM_CLASSES + 1 // 12 (box + objectness + classes)
@@ -81,15 +86,19 @@ class ExpoYoloTfliteModule : Module() {
       true
     }
 
+    // Non-blocking: never triggers disk read / Interpreter init.
     Function("isLoaded") {
       interpreter != null
     }
 
+    // Runs ensureInterpreter on a dedicated background thread so JS/UI
+    // stay responsive even when GPU delegate compile takes seconds.
     AsyncFunction("loadModel") {
-      ensureInterpreter()
+      ensureInterpreterOnBackground()
       tensorReport()
     }
 
+    // Non-blocking: never triggers ensureInterpreter().
     Function("getTensorInfo") {
       if (interpreter == null) {
         throw Exception("Model not loaded. Call loadModel() first.")
@@ -98,7 +107,7 @@ class ExpoYoloTfliteModule : Module() {
     }
 
     AsyncFunction("detectImageUri") { uri: String ->
-      ensureInterpreter()
+      requireInterpreter()
       val bitmap = decodeBitmap(uri)
         ?: throw Exception("Could not decode image: $uri")
       try {
@@ -109,10 +118,21 @@ class ExpoYoloTfliteModule : Module() {
     }
 
     AsyncFunction("detectRgb") { pixels: ByteArray, width: Int, height: Int, stride: Int, channels: Int, isBgra: Boolean ->
-      ensureInterpreter()
+      // Do not lazy-load here — first-frame init would jank the UI.
+      requireInterpreter()
+      val t0 = System.currentTimeMillis()
       val bitmap = rgbToBitmap(pixels, width, height, stride, channels, isBgra)
+      val tConv = System.currentTimeMillis() - t0
       try {
-        detectBitmap(bitmap).map { it.toMap() }
+        val dets = detectBitmap(bitmap)
+        val tInf = System.currentTimeMillis() - t0
+        if (loggedFirstDetectRgb.compareAndSet(false, true)) {
+          Log.d(
+            "YoloTflite",
+            "detectRgb timings — load=0ms (preloaded) conv=${tConv}ms infer=${tInf - tConv}ms total=${tInf}ms",
+          )
+        }
+        dets.map { it.toMap() }
       } finally {
         if (!bitmap.isRecycled) bitmap.recycle()
       }
@@ -169,6 +189,16 @@ class ExpoYoloTfliteModule : Module() {
       out.absolutePath
     }
 
+    /**
+     * Burn live-overlay boxes into a copy of a recorded video.
+     * [frameReports] = [{ atMs, detections: [{x,y,width,height,label,confidence,...}] }]
+     * [confThresh] selects green vs amber stroke (same as camera UI).
+     * Returns filesystem path of the annotated MP4 (or throws).
+     */
+    AsyncFunction("annotateVideoUri") { uri: String, frameReports: List<Map<String, Any>>, confThresh: Double ->
+      VideoAnnotator.annotate(context, uri, frameReports, confThresh.toFloat())
+    }
+
     AsyncFunction("unload") {
       interpreter?.close()
       interpreter = null
@@ -178,19 +208,59 @@ class ExpoYoloTfliteModule : Module() {
     }
   }
 
-  private fun ensureInterpreter() {
+  private fun requireInterpreter(): Interpreter {
+    return interpreter
+      ?: throw Exception("Model not loaded. Call loadModel() first.")
+  }
+
+  /**
+   * Blocks the *caller* until init finishes, but init itself always runs on a
+   * dedicated worker thread — never the Android main / UI thread.
+   */
+  private fun ensureInterpreterOnBackground() {
     if (interpreter != null) return
-    Log.i("YoloTflite", "Loading model asset=$MODEL_ASSET …")
-    val modelBuffer = FileUtil.loadMappedFile(context, MODEL_ASSET)
-    // INT8 + GpuDelegate often hangs or stalls on first Interpreter() on Samsung /
-    // Adreno. Prefer CPU (XNNPACK) for quantized assets; float32 may still use GPU.
-    val preferGpu = !MODEL_ASSET.contains("int8", ignoreCase = true)
-    interpreter = buildInterpreter(modelBuffer, preferGpu = preferGpu)
-    Log.i(
-      "YoloTflite",
-      if (usingGpu) "Interpreter ready with GPU delegate"
-      else "Interpreter ready on CPU (4 threads)",
-    )
+    val latch = CountDownLatch(1)
+    var error: Exception? = null
+    Thread(
+      {
+        try {
+          ensureInterpreter()
+        } catch (e: Exception) {
+          error = e
+        } finally {
+          latch.countDown()
+        }
+      },
+      "YoloTflite-load",
+    ).start()
+    latch.await()
+    error?.let { throw it }
+  }
+
+  private fun ensureInterpreter() {
+    synchronized(interpreterLock) {
+      if (interpreter != null) return
+      val start = System.currentTimeMillis()
+      Log.d("YoloTflite", "Loading model asset=$MODEL_ASSET …")
+      val modelBuffer = FileUtil.loadMappedFile(context, MODEL_ASSET)
+      val tMap = System.currentTimeMillis() - start
+      // INT8 + GpuDelegate often hangs or stalls on first Interpreter() on Samsung /
+      // Adreno. Prefer CPU (XNNPACK) for quantized assets; float32 may still use GPU.
+      val preferGpu = !MODEL_ASSET.contains("int8", ignoreCase = true)
+      val tBuild0 = System.currentTimeMillis()
+      interpreter = buildInterpreter(modelBuffer, preferGpu = preferGpu)
+      val tBuild = System.currentTimeMillis() - tBuild0
+      val elapsed = System.currentTimeMillis() - start
+      Log.d(
+        "YoloTflite",
+        "Model loaded in ${elapsed}ms (mmap=${tMap}ms build=${tBuild}ms gpu=$usingGpu)",
+      )
+      Log.i(
+        "YoloTflite",
+        if (usingGpu) "Interpreter ready with GPU delegate"
+        else "Interpreter ready on CPU (4 threads)",
+      )
+    }
   }
 
   private fun buildInterpreter(

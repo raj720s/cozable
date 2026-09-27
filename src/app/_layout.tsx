@@ -134,14 +134,19 @@ function RootNavigator() {
           contentStyle: { backgroundColor: colors.background },
         }}
       >
-        <Stack.Screen name="index" />
+        {/* Auth / intro */}
+        <Stack.Screen name="index" options={{ animation: 'fade' }} />
+        <Stack.Screen name="login" options={{ animation: 'fade' }} />
         <Stack.Screen name="signup" />
-        <Stack.Screen name="home" />
-        <Stack.Screen name="camera" />
+
+        {/* Main shell with bottom tabs */}
+        <Stack.Screen name="(tabs)" />
+
+        {/* Fullscreen / flow screens (no tab bar) */}
+        <Stack.Screen name="camera" options={{ animation: 'slide_from_bottom' }} />
         <Stack.Screen name="summary" />
         <Stack.Screen name="gallery" />
         <Stack.Screen name="inventory-updated" />
-        <Stack.Screen name="inventory" />
       </Stack>
     </>
   );

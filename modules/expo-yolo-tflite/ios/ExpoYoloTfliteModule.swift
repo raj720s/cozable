@@ -32,6 +32,10 @@ public class ExpoYoloTfliteModule: Module {
       throw Exception("ExpoYoloTflite is Android-only for now (LiteRT).")
     }
 
+    AsyncFunction("annotateVideoUri") { (_: String, _: [[String: Any]], _: Double) -> String in
+      throw Exception("ExpoYoloTflite is Android-only for now (LiteRT).")
+    }
+
     AsyncFunction("unload") { () in
       // no-op
     }

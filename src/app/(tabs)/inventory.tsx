@@ -1,5 +1,5 @@
 import { router } from 'expo-router';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   ScrollView,
   StyleSheet,
@@ -9,10 +9,10 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { AppHeader } from '../components/AppHeader';
-import { BottomNav } from '../components/BottomNav';
-import { StatusBadge } from '../components/StatusBadge';
-import { colors, fonts } from '../theme/scanner';
+import { AppHeader } from '../../components/AppHeader';
+import { useDayColourOps } from '../../hooks/useDayColourOps';
+import { colors, fonts } from '../../theme/scanner';
+import type { ColourStockItem } from '../../utils/dayColourCalendar';
 
 // ─── Data ────────────────────────────────────────────────────────────────────
 type FilterTab = 'all' | 'at-risk' | 'use-soon';
@@ -32,64 +32,20 @@ interface FoodItem {
   dotColor: string;
 }
 
-const FOOD_ITEMS: FoodItem[] = [
-  {
-    id: '1',
-    name: 'Chicken Sandwich',
-    batchCode: 'B102',
-    units: 24,
-    value: '₹2,400 at risk',
-    isAtRisk: true,
-    useBy: 'Today · 8:00 PM',
-    action: 'use-first',
-    dotColor: '#EF4444',
-  },
-  {
-    id: '2',
-    name: 'Vegetable Wrap',
-    batchCode: 'B108',
-    units: 18,
-    value: '₹1,260 value',
-    isAtRisk: false,
-    useBy: 'Tomorrow · 12:00 PM',
-    action: 'allocate',
-    dotColor: '#3B82F6',
-  },
-  {
-    id: '3',
-    name: 'Fruit Box',
-    batchCode: 'B115',
-    units: 40,
-    value: '₹2,200 value',
-    isAtRisk: false,
-    useBy: 'Use by: 28 Sep',
-    action: 'optimal',
-    dotColor: '#10B981',
-  },
-  {
-    id: '4',
-    name: 'Green Chutney',
-    batchCode: 'FD-047',
-    units: 24,
-    value: '',
-    isAtRisk: false,
-    useBy: 'Use by: 27 Sep 2026 (1 day left)',
-    location: 'Shelf 3 Bay 03',
-    action: 'haccp',
-    dotColor: '#10B981',
-  },
-  {
-    id: '5',
-    name: 'Greek Yogurt Cup',
-    batchCode: 'Batch 44',
-    units: 16,
-    value: '',
-    isAtRisk: false,
-    useBy: 'Use by: 29 Sep 2026',
-    action: 'details',
-    dotColor: '#3B82F6',
-  },
-];
+function stockToFoodItem(s: ColourStockItem): FoodItem {
+  return {
+    id: s.id,
+    name: `${s.colour} · ${s.weekday}`,
+    batchCode: `C${s.classId}`,
+    units: s.units,
+    value: s.value,
+    isAtRisk: s.isAtRisk,
+    useBy: s.useBy,
+    location: s.deliveryLabel,
+    action: s.action,
+    dotColor: s.hex,
+  };
+}
 
 // ─── Action Button ────────────────────────────────────────────────────────────
 function ActionButton({ action }: { action: ActionType }) {
@@ -304,8 +260,13 @@ const row = StyleSheet.create({
 export default function InventoryScreen() {
   const [activeTab, setActiveTab] = useState<FilterTab>('all');
   const [searchText, setSearchText] = useState('');
+  const { today, stock, atRisk, useFirst, totalUnits, atRiskUnits, latestScan } =
+    useDayColourOps();
 
-  const filteredItems = FOOD_ITEMS.filter((item) => {
+  const foodItems = useMemo(() => stock.map(stockToFoodItem), [stock]);
+  const useSoonCount = stock.filter((s) => s.useSoon).length;
+
+  const filteredItems = foodItems.filter((item) => {
     const matchSearch =
       searchText === '' ||
       item.name.toLowerCase().includes(searchText.toLowerCase()) ||
@@ -313,7 +274,7 @@ export default function InventoryScreen() {
     const matchTab =
       activeTab === 'all' ||
       (activeTab === 'at-risk' && item.isAtRisk) ||
-      (activeTab === 'use-soon' && !item.isAtRisk);
+      (activeTab === 'use-soon' && !item.isAtRisk && item.action === 'allocate');
     return matchSearch && matchTab;
   });
 
@@ -324,10 +285,10 @@ export default function InventoryScreen() {
         <AppHeader
           title="Inventory"
           showLiveDot
-          rightIcon="⚙"
-          onRightPress={() => {}}
-          rightIcon2="👤"
-          onRightPress2={() => {}}
+          rightIcon="image-multiple"
+          onRightPress={() => router.push('/gallery')}
+          rightIcon2="palette"
+          onRightPress2={() => router.push('/more')}
         />
 
         <ScrollView
@@ -340,15 +301,15 @@ export default function InventoryScreen() {
             <View style={styles.subHeaderLeft}>
               <View style={styles.titleWithDot}>
                 <Text style={styles.subTitle}>Inventory</Text>
-                <View style={styles.liveDot} />
+                <View style={[styles.liveDot, { backgroundColor: today.hex }]} />
               </View>
               <Text style={styles.itemCount}>
-                257 items in stock{' '}
-                <Text style={styles.syncedText}>(+9 synced)</Text>
+                {totalUnits} labels this week{' '}
+                <Text style={styles.syncedText}>({today.pillText})</Text>
               </Text>
             </View>
-            <TouchableOpacity style={styles.searchIconBtn}>
-              <Text style={styles.searchIconText}>🔍</Text>
+            <TouchableOpacity style={styles.searchIconBtn} onPress={() => router.push('/camera')}>
+              <Text style={styles.searchIconText}>📷</Text>
             </TouchableOpacity>
           </View>
 
@@ -357,24 +318,36 @@ export default function InventoryScreen() {
             <Text style={styles.searchIcon}>🔍</Text>
             <TextInput
               style={styles.searchInput}
-              placeholder="Search food / batch..."
+              placeholder="Search colour / weekday..."
               placeholderTextColor={colors.muted}
               value={searchText}
               onChangeText={setSearchText}
               selectionColor={colors.primary}
             />
-            <TouchableOpacity style={styles.barcodeBtn}>
+            <TouchableOpacity style={styles.barcodeBtn} onPress={() => router.push('/camera')}>
               <Text style={styles.barcodeIcon}>⊞</Text>
             </TouchableOpacity>
           </View>
 
           {/* Filter Tabs */}
           <View style={styles.tabsRow}>
-            {([
-              { id: 'all', label: 'All', count: 257, dot: '' },
-              { id: 'at-risk', label: 'At Risk', count: 12, dot: colors.error },
-              { id: 'use-soon', label: 'Use Soon', count: 8, dot: '#3B82F6' },
-            ] as { id: FilterTab; label: string; count: number; dot: string }[]).map((tab) => (
+            {(
+              [
+                { id: 'all', label: 'All', count: stock.length, dot: '' },
+                {
+                  id: 'at-risk',
+                  label: 'At Risk',
+                  count: atRisk.length,
+                  dot: colors.error,
+                },
+                {
+                  id: 'use-soon',
+                  label: 'Use Soon',
+                  count: useSoonCount,
+                  dot: '#3B82F6',
+                },
+              ] as { id: FilterTab; label: string; count: number; dot: string }[]
+            ).map((tab) => (
               <TouchableOpacity
                 key={tab.id}
                 style={[styles.tab, activeTab === tab.id && styles.tabActive]}
@@ -394,48 +367,66 @@ export default function InventoryScreen() {
           {/* Summary Card */}
           <View style={styles.summaryCard}>
             <View style={styles.summaryHeader}>
-              <Text style={styles.summaryTitle}>INVENTORY SUMMARY</Text>
+              <Text style={styles.summaryTitle}>WEEKLY DAY-DOT SUMMARY</Text>
               <View style={styles.onlineRow}>
                 <Text style={styles.onlineWave}>〰</Text>
-                <Text style={styles.onlineText}>Online</Text>
+                <Text style={styles.onlineText}>{today.weekLabel}</Text>
               </View>
             </View>
             <View style={styles.summaryStatsRow}>
               <View style={styles.summaryStat}>
-                <Text style={styles.summaryVal}>257</Text>
-                <Text style={styles.summaryLabel}>Total Items</Text>
+                <Text style={styles.summaryVal}>{totalUnits}</Text>
+                <Text style={styles.summaryLabel}>Total Labels</Text>
               </View>
               <View style={styles.summaryStat}>
                 <View style={styles.summaryDotRow}>
                   <View style={[styles.summaryDot, { backgroundColor: colors.error }]} />
-                  <Text style={[styles.summaryVal, { color: '#FCA5A5' }]}>12</Text>
+                  <Text style={[styles.summaryVal, { color: '#FCA5A5' }]}>{atRiskUnits}</Text>
                 </View>
                 <Text style={styles.summaryLabel}>At Risk</Text>
               </View>
               <View style={styles.summaryStat}>
                 <View style={styles.summaryDotRow}>
                   <View style={[styles.summaryDot, { backgroundColor: '#3B82F6' }]} />
-                  <Text style={[styles.summaryVal, { color: '#93C5FD' }]}>8</Text>
+                  <Text style={[styles.summaryVal, { color: '#93C5FD' }]}>{useFirst.length}</Text>
                 </View>
                 <Text style={styles.summaryLabel}>Use First</Text>
               </View>
             </View>
           </View>
 
-          {/* Batch Banner */}
-          <TouchableOpacity style={styles.batchBanner} activeOpacity={0.8}>
+          {/* Latest scan banner */}
+          <TouchableOpacity
+            style={styles.batchBanner}
+            activeOpacity={0.8}
+            onPress={() => {
+              if (latestScan) {
+                router.push({ pathname: '/summary', params: { id: latestScan.id } });
+              } else {
+                router.push('/camera');
+              }
+            }}
+          >
             <View style={styles.batchLeft}>
               <View style={styles.batchIconWrap}>
                 <Text style={styles.batchIcon}>⊙</Text>
               </View>
               <View>
                 <View style={styles.batchTitleRow}>
-                  <Text style={styles.batchTitle}>Batch #BCH-8824</Text>
-                  <View style={styles.newBadge}>
-                    <Text style={styles.newBadgeText}>NEW</Text>
-                  </View>
+                  <Text style={styles.batchTitle}>
+                    {latestScan ? `Scan #${latestScan.id.slice(-5).toUpperCase()}` : 'No scans yet'}
+                  </Text>
+                  {latestScan ? (
+                    <View style={styles.newBadge}>
+                      <Text style={styles.newBadgeText}>LIVE</Text>
+                    </View>
+                  ) : null}
                 </View>
-                <Text style={styles.batchSub}>9 items confirmed 2m ago</Text>
+                <Text style={styles.batchSub}>
+                  {latestScan
+                    ? `${latestScan.detected} labels · ${latestScan.timeLabel}`
+                    : 'Scan a rack to populate inventory'}
+                </Text>
               </View>
             </View>
             <Text style={styles.batchArrow}>›</Text>
@@ -443,11 +434,11 @@ export default function InventoryScreen() {
 
           {/* Food Items Section */}
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>FOOD ITEMS</Text>
-            <Text style={styles.sectionSubtitle}> (Sorted by urgency)</Text>
+            <Text style={styles.sectionTitle}>DAY-COLOUR STOCK</Text>
+            <Text style={styles.sectionSubtitle}> (by delivery day)</Text>
             <View style={{ flex: 1 }} />
-            <TouchableOpacity style={styles.filterBtn}>
-              <Text style={styles.filterText}>Filter ⚙</Text>
+            <TouchableOpacity style={styles.filterBtn} onPress={() => router.push('/use-first')}>
+              <Text style={styles.filterText}>Use First</Text>
             </TouchableOpacity>
           </View>
 
@@ -458,7 +449,11 @@ export default function InventoryScreen() {
             ))}
             {filteredItems.length === 0 && (
               <View style={styles.emptyState}>
-                <Text style={styles.emptyText}>No items match your filter.</Text>
+                <Text style={styles.emptyText}>
+                  {stock.length === 0
+                    ? 'No YOLO labels this week — open Scan to detect day-dots.'
+                    : 'No items match your filter.'}
+                </Text>
               </View>
             )}
           </View>
@@ -467,9 +462,6 @@ export default function InventoryScreen() {
           <View style={{ height: 96 }} />
         </ScrollView>
       </SafeAreaView>
-
-      {/* Bottom Nav */}
-      <BottomNav active="inventory" />
     </View>
   );
 }

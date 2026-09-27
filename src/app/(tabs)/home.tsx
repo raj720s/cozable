@@ -1,19 +1,34 @@
 import { router } from 'expo-router';
 import {
-  ScrollView,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
+    ScrollView,
+    StyleSheet,
+    Text,
+    TextInput,
+    TouchableOpacity,
+    View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { BottomNav } from '../components/BottomNav';
-import { useScanStore } from '../store/scanStore';
-import { colors, fonts } from '../theme/scanner';
+import { useDayColourOps } from '../../hooks/useDayColourOps';
+import { useScanStore } from '../../store/scanStore';
+import { fonts } from '../../theme/scanner';
 
 export default function HomeScreen() {
   const expectedCount = useScanStore((s) => s.expectedCount);
   const setExpectedCount = useScanStore((s) => s.setExpectedCount);
+  const {
+    today,
+    week,
+    atRisk,
+    useFirst,
+    totalUnits,
+    atRiskUnits,
+    latestScan,
+  } = useDayColourOps();
+
+  const bumpExpected = (delta: number) => {
+    const next = Math.min(99, Math.max(1, expectedCount + delta));
+    setExpectedCount(next);
+  };
 
   const handleScanPress = () => {
     const count = expectedCount > 0 ? expectedCount : 9;
@@ -24,34 +39,55 @@ export default function HomeScreen() {
     });
   };
 
+  const riskPreview = atRisk.slice(0, 2);
+  const soonPreview = useFirst.filter((s) => !s.isAtRisk).slice(0, 1);
+  const listPreview = [...riskPreview, ...soonPreview].slice(0, 2);
+
   return (
     <View style={styles.container}>
       <SafeAreaView style={styles.safe} edges={['top']}>
         <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false}>
-          {/* Header */}
           <View style={styles.header}>
             <View style={styles.headerTop}>
-              <View style={styles.datePill}>
-                <View style={styles.dateDot} />
-                <Text style={styles.dateText}>Monday · Blue</Text>
+              <View style={[styles.datePill, { backgroundColor: `${today.hex}26` }]}>
+                <View style={[styles.dateDot, { backgroundColor: today.hex }]} />
+                <Text style={[styles.dateText, { color: today.hex }]}>{today.pillText}</Text>
               </View>
-              <Text style={styles.headerSubtitle}>Food Operations</Text>
+              <Text style={styles.headerSubtitle}>Week {today.weekLabel}</Text>
             </View>
             <View style={styles.headerRow}>
-              <Text style={styles.greeting}>Good Morning, Bikash</Text>
+              <Text style={styles.greeting}>{today.greeting}</Text>
               <View style={styles.headerIcons}>
-                <TouchableOpacity style={styles.bellIcon}>
-                  <Text style={styles.bellText}>🔔</Text>
-                  <View style={styles.bellBadge} />
+                <TouchableOpacity style={styles.bellIcon} onPress={() => router.push('/gallery')}>
+                  <Text style={styles.bellText}>▣</Text>
+                  {latestScan ? <View style={styles.bellBadge} /> : null}
                 </TouchableOpacity>
-                <TouchableOpacity style={styles.avatar}>
-                  <Text style={styles.avatarText}>BK</Text>
+                <TouchableOpacity style={[styles.avatar, { backgroundColor: today.hex }]}>
+                  <Text style={styles.avatarText}>{today.shortDay.slice(0, 2).toUpperCase()}</Text>
                 </TouchableOpacity>
               </View>
             </View>
           </View>
 
-          {/* Quick Actions Grid */}
+          <View style={styles.weekStrip}>
+            {week.map((d) => (
+              <View
+                key={d.shortDay}
+                style={[
+                  styles.weekCell,
+                  d.isToday && styles.weekCellToday,
+                  d.isPast && styles.weekCellPast,
+                ]}
+              >
+                <View style={[styles.weekDot, { backgroundColor: d.hex }]} />
+                <Text style={[styles.weekDay, d.isToday && styles.weekDayToday]}>{d.shortDay}</Text>
+                <Text style={styles.weekColour} numberOfLines={1}>
+                  {d.colour.slice(0, 3)}
+                </Text>
+              </View>
+            ))}
+          </View>
+
           <View style={styles.gridRow}>
             <TouchableOpacity style={styles.gridItem} onPress={handleScanPress}>
               <View style={[styles.gridIconWrap, { backgroundColor: 'rgba(59, 130, 246, 0.1)' }]}>
@@ -65,102 +101,141 @@ export default function HomeScreen() {
               </View>
               <Text style={styles.gridText}>Inventory</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.gridItem}>
+            <TouchableOpacity style={styles.gridItem} onPress={() => router.push('/use-first')}>
               <View style={[styles.gridIconWrap, { backgroundColor: 'rgba(245, 158, 11, 0.1)' }]}>
                 <Text style={styles.gridIcon}>⚠️</Text>
               </View>
               <Text style={styles.gridText}>Use First</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.gridItem}>
+            <TouchableOpacity style={styles.gridItem} onPress={() => router.push('/more')}>
               <View style={[styles.gridIconWrap, { backgroundColor: 'rgba(16, 185, 129, 0.1)' }]}>
-                <Text style={styles.gridIcon}>🔄</Text>
+                <Text style={styles.gridIcon}>◎</Text>
               </View>
-              <Text style={styles.gridText}>Log Waste</Text>
+              <Text style={styles.gridText}>Rotation</Text>
             </TouchableOpacity>
           </View>
 
-          {/* Metrics Row 1 */}
+          <View style={styles.expectCard}>
+            <Text style={styles.expectLabel}>Expected trays this sweep</Text>
+            <View style={styles.expectRow}>
+              <TouchableOpacity style={styles.expectStep} onPress={() => bumpExpected(-1)}>
+                <Text style={styles.expectStepText}>−</Text>
+              </TouchableOpacity>
+              <TextInput
+                style={styles.expectInput}
+                keyboardType="number-pad"
+                value={String(expectedCount)}
+                onChangeText={(t) => {
+                  const n = parseInt(t.replace(/\D/g, ''), 10);
+                  if (!Number.isNaN(n)) setExpectedCount(Math.min(99, Math.max(1, n)));
+                }}
+                maxLength={2}
+                selectTextOnFocus
+              />
+              <TouchableOpacity style={styles.expectStep} onPress={() => bumpExpected(1)}>
+                <Text style={styles.expectStepText}>+</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.expectGo} onPress={handleScanPress}>
+                <Text style={styles.expectGoText}>START SWEEP</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
           <View style={styles.metricsRow}>
             <View style={styles.metricCard}>
               <View style={styles.metricHeader}>
-                <Text style={styles.metricTitle}>INVENTORY</Text>
-                <View style={[styles.metricDot, { backgroundColor: '#3B82F6' }]} />
+                <Text style={styles.metricTitle}>THIS WEEK</Text>
+                <View style={[styles.metricDot, { backgroundColor: today.hex }]} />
               </View>
-              <Text style={styles.metricValue}>2,840</Text>
-              <Text style={styles.metricSub}>units in cool store</Text>
+              <Text style={styles.metricValue}>{totalUnits}</Text>
+              <Text style={styles.metricSub}>labels scanned (Sun–Sat)</Text>
             </View>
             <View style={[styles.metricCard, styles.metricCardAlert]}>
               <View style={styles.metricHeader}>
-                <Text style={[styles.metricTitle, { color: '#EF4444' }]}>FOOD AT RISK</Text>
+                <Text style={[styles.metricTitle, { color: '#EF4444' }]}>USE NOW</Text>
                 <View style={[styles.metricDot, { backgroundColor: '#EF4444' }]} />
               </View>
-              <Text style={[styles.metricValue, { color: '#FCA5A5' }]}>126</Text>
-              <Text style={[styles.metricSub, { color: '#EF4444', fontWeight: 'bold' }]}>Action required</Text>
+              <Text style={[styles.metricValue, { color: '#FCA5A5' }]}>{atRiskUnits}</Text>
+              <Text style={[styles.metricSub, { color: '#EF4444', fontWeight: 'bold' }]}>
+                {today.colour} / expired colours
+              </Text>
             </View>
           </View>
 
-          {/* Metrics Row 2 */}
           <View style={styles.metricsRow}>
             <View style={styles.metricCard}>
               <View style={styles.metricHeader}>
-                <Text style={styles.metricTitle}>TODAY'S USAGE</Text>
-                <View style={[styles.metricDot, { backgroundColor: '#10B981' }]} />
+                <Text style={styles.metricTitle}>TODAY COLOUR</Text>
+                <View style={[styles.metricDot, { backgroundColor: today.hex }]} />
               </View>
-              <Text style={styles.metricValue}>1,842</Text>
-              <Text style={[styles.metricSub, { color: '#10B981' }]}>↑ 12% vs planned</Text>
+              <Text style={styles.metricValue}>{today.colour}</Text>
+              <Text style={[styles.metricSub, { color: today.hex }]}>{today.weekday} delivery</Text>
             </View>
             <View style={styles.metricCard}>
               <View style={styles.metricHeader}>
-                <Text style={styles.metricTitle}>WASTE</Text>
-                <View style={[styles.metricDot, { backgroundColor: '#6B7280' }]} />
+                <Text style={styles.metricTitle}>QUEUE</Text>
+                <View style={[styles.metricDot, { backgroundColor: '#F59E0B' }]} />
               </View>
-              <Text style={styles.metricValue}>34</Text>
-              <Text style={[styles.metricSub, { color: '#10B981' }]}>-62% under limit</Text>
+              <Text style={styles.metricValue}>{useFirst.length}</Text>
+              <Text style={styles.metricSub}>colours due ≤ tomorrow</Text>
             </View>
           </View>
 
-          {/* Section: Food At Risk */}
           <View style={styles.sectionHeader}>
             <View style={styles.sectionTitleRow}>
               <View style={[styles.sectionDot, { backgroundColor: '#EF4444' }]} />
               <Text style={styles.sectionTitle}>Food At Risk</Text>
             </View>
-            <TouchableOpacity><Text style={styles.viewAllText}>View All →</Text></TouchableOpacity>
+            <TouchableOpacity onPress={() => router.push('/use-first')}>
+              <Text style={styles.viewAllText}>View All →</Text>
+            </TouchableOpacity>
           </View>
 
           <View style={styles.listCard}>
-            <View style={styles.listItem}>
-              <View style={styles.listItemInfo}>
-                <View style={styles.itemTitleRow}>
-                  <View style={[styles.itemDot, { backgroundColor: '#EF4444' }]} />
-                  <Text style={styles.itemTitle}>Chicken Sandwich</Text>
+            {listPreview.length === 0 ? (
+              <Text style={styles.emptyHint}>
+                No at-risk day-dots yet. Scan trays to fill this week rotation.
+              </Text>
+            ) : (
+              listPreview.map((item, idx) => (
+                <View key={item.id}>
+                  {idx > 0 ? <View style={styles.listDivider} /> : null}
+                  <View style={styles.listItem}>
+                    <View style={styles.listItemInfo}>
+                      <View style={styles.itemTitleRow}>
+                        <View style={[styles.itemDot, { backgroundColor: item.hex }]} />
+                        <Text style={styles.itemTitle}>
+                          {item.colour} · {item.weekday}
+                        </Text>
+                      </View>
+                      <Text style={styles.itemSub}>
+                        {item.units} labels ·{' '}
+                        <Text style={{ color: item.isAtRisk ? '#EF4444' : '#F59E0B' }}>
+                          {item.useBy}
+                        </Text>
+                      </Text>
+                      <Text style={item.isAtRisk ? styles.itemPrice : styles.itemPriceYellow}>
+                        {item.deliveryLabel}
+                      </Text>
+                    </View>
+                    <TouchableOpacity
+                      style={item.isAtRisk ? styles.actionBtnRed : styles.actionBtnOutline}
+                      onPress={() => router.push('/use-first')}
+                    >
+                      <Text
+                        style={
+                          item.isAtRisk ? styles.actionBtnText : styles.actionBtnOutlineText
+                        }
+                      >
+                        {item.isAtRisk ? 'USE NOW' : 'ALLOCATE'}
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
                 </View>
-                <Text style={styles.itemSub}>24 units · <Text style={{ color: '#EF4444' }}>Expires Today</Text></Text>
-                <Text style={styles.itemPrice}>₹2,400 at risk</Text>
-              </View>
-              <TouchableOpacity style={styles.actionBtnRed}>
-                <Text style={styles.actionBtnText}>USE NOW</Text>
-              </TouchableOpacity>
-            </View>
-            
-            <View style={styles.listDivider} />
-
-            <View style={styles.listItem}>
-              <View style={styles.listItemInfo}>
-                <View style={styles.itemTitleRow}>
-                  <View style={[styles.itemDot, { backgroundColor: '#F59E0B' }]} />
-                  <Text style={styles.itemTitle}>Vegetable Wrap</Text>
-                </View>
-                <Text style={styles.itemSub}>18 units · <Text style={{ color: '#F59E0B' }}>Expires in 12h</Text></Text>
-                <Text style={styles.itemPriceYellow}>₹1,620 at risk</Text>
-              </View>
-              <TouchableOpacity style={styles.actionBtnOutline}>
-                <Text style={styles.actionBtnOutlineText}>ALLOCATE</Text>
-              </TouchableOpacity>
-            </View>
+              ))
+            )}
           </View>
 
-          {/* Section: Latest Scan */}
           <View style={styles.scanSummaryCard}>
             <View style={styles.scanSummaryHeader}>
               <View style={styles.scanSummaryIconWrap}>
@@ -168,53 +243,78 @@ export default function HomeScreen() {
               </View>
               <View style={styles.scanSummaryInfo}>
                 <Text style={styles.scanSummaryTitle}>Latest Scan</Text>
-                <Text style={styles.scanSummarySub}>Rack A · 10:42 AM</Text>
+                <Text style={styles.scanSummarySub}>
+                  {latestScan
+                    ? `${latestScan.rackLabel} · ${latestScan.timeLabel}`
+                    : 'No captures this session'}
+                </Text>
               </View>
-              <View style={styles.completedBadge}>
-                <Text style={styles.completedBadgeText}>Completed</Text>
-              </View>
+              {latestScan ? (
+                <View style={styles.completedBadge}>
+                  <Text style={styles.completedBadgeText}>
+                    {latestScan.review === 0 ? 'Completed' : 'Review'}
+                  </Text>
+                </View>
+              ) : null}
             </View>
-            
+
             <View style={styles.scanStatsRow}>
               <View style={styles.scanStat}>
                 <Text style={styles.scanStatLabel}>EXPECTED</Text>
-                <Text style={styles.scanStatVal}>9</Text>
+                <Text style={styles.scanStatVal}>{latestScan?.expectedCount ?? '—'}</Text>
               </View>
               <View style={styles.scanStat}>
                 <Text style={styles.scanStatLabel}>DETECTED</Text>
-                <Text style={styles.scanStatVal}>9</Text>
+                <Text style={styles.scanStatVal}>{latestScan?.detected ?? 0}</Text>
               </View>
               <View style={styles.scanStat}>
                 <Text style={[styles.scanStatLabel, { color: '#10B981' }]}>VERIFIED</Text>
-                <Text style={[styles.scanStatVal, { color: '#10B981' }]}>8</Text>
+                <Text style={[styles.scanStatVal, { color: '#10B981' }]}>
+                  {latestScan?.verified ?? 0}
+                </Text>
               </View>
               <View style={styles.scanStat}>
                 <Text style={[styles.scanStatLabel, { color: '#F59E0B' }]}>REVIEW</Text>
-                <Text style={[styles.scanStatVal, { color: '#F59E0B' }]}>1</Text>
+                <Text style={[styles.scanStatVal, { color: '#F59E0B' }]}>
+                  {latestScan?.review ?? 0}
+                </Text>
               </View>
             </View>
 
             <View style={styles.accuracyRow}>
               <Text style={styles.accuracyLabel}>Verification Accuracy</Text>
-              <Text style={styles.accuracyVal}>89%</Text>
+              <Text style={styles.accuracyVal}>{latestScan?.accuracy ?? 0}%</Text>
             </View>
             <View style={styles.progressBarBg}>
-              <View style={[styles.progressBarFill, { width: '89%' }]} />
+              <View
+                style={[
+                  styles.progressBarFill,
+                  { width: `${Math.min(100, latestScan?.accuracy ?? 0)}%` },
+                ]}
+              />
             </View>
 
-            <TouchableOpacity style={styles.viewScanBtn} onPress={() => router.push('/summary')}>
-              <Text style={styles.viewScanBtnText}>VIEW SCAN</Text>
+            <TouchableOpacity
+              style={styles.viewScanBtn}
+              onPress={() => {
+                if (latestScan) {
+                  router.push({ pathname: '/summary', params: { id: latestScan.id } });
+                } else {
+                  handleScanPress();
+                }
+              }}
+            >
+              <Text style={styles.viewScanBtnText}>
+                {latestScan ? 'VIEW SCAN' : 'START SCAN'}
+              </Text>
             </TouchableOpacity>
           </View>
-
         </ScrollView>
       </SafeAreaView>
-
-      {/* Shared Bottom Navigation */}
-      <BottomNav active="home" />
     </View>
   );
 }
+
 
 const styles = StyleSheet.create({
   container: {
@@ -262,7 +362,7 @@ const styles = StyleSheet.create({
   headerSubtitle: {
     fontFamily: fonts.sans,
     fontSize: 12,
-    color: colors.muted,
+    color: '#C8CDD6',
   },
   headerRow: {
     flexDirection: 'row',
@@ -318,6 +418,64 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
   },
+  expectCard: {
+    marginTop: 16,
+    padding: 14,
+    borderRadius: 14,
+    backgroundColor: '#1B1F2A',
+    borderWidth: 1,
+    borderColor: '#2A3140',
+    gap: 10,
+  },
+  expectLabel: {
+    fontFamily: fonts.sansMd,
+    fontSize: 13,
+    color: '#9CA3AF',
+  },
+  expectRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  expectStep: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#252B38',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  expectStepText: {
+    fontSize: 22,
+    color: '#E5E7EB',
+    fontFamily: fonts.sansBold,
+  },
+  expectInput: {
+    width: 56,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#0F131A',
+    borderWidth: 1,
+    borderColor: '#3B82F6',
+    color: '#F9FAFB',
+    fontFamily: fonts.monoBold,
+    fontSize: 18,
+    textAlign: 'center',
+  },
+  expectGo: {
+    flex: 1,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#10B981',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  expectGoText: {
+    fontFamily: fonts.sansBold,
+    fontSize: 13,
+    color: '#042F1A',
+    letterSpacing: 0.4,
+  },
   gridItem: {
     alignItems: 'center',
     gap: 8,
@@ -341,7 +499,7 @@ const styles = StyleSheet.create({
   gridText: {
     fontFamily: fonts.sansMd,
     fontSize: 11,
-    color: '#D1D5DB',
+    color: '#E8EAED',
   },
   metricsRow: {
     flexDirection: 'row',
@@ -368,7 +526,7 @@ const styles = StyleSheet.create({
   metricTitle: {
     fontFamily: fonts.sansBold,
     fontSize: 10,
-    color: '#9CA3AF',
+    color: '#C8CDD6',
     letterSpacing: 1,
   },
   metricDot: {
@@ -385,7 +543,7 @@ const styles = StyleSheet.create({
   metricSub: {
     fontFamily: fonts.sans,
     fontSize: 11,
-    color: '#9CA3AF',
+    color: '#C8CDD6',
   },
   sectionHeader: {
     flexDirection: 'row',
@@ -412,6 +570,52 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sansMd,
     fontSize: 12,
     color: '#3B82F6',
+  },
+  emptyHint: {
+    fontFamily: fonts.sans,
+    fontSize: 13,
+    color: '#C8CDD6',
+    lineHeight: 20,
+  },
+  weekStrip: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    backgroundColor: '#161A23',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#262A36',
+    paddingVertical: 10,
+    paddingHorizontal: 6,
+  },
+  weekCell: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 4,
+    opacity: 0.85,
+  },
+  weekCellToday: {
+    opacity: 1,
+  },
+  weekCellPast: {
+    opacity: 0.45,
+  },
+  weekDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  weekDay: {
+    fontFamily: fonts.sansMd,
+    fontSize: 10,
+    color: '#C8CDD6',
+  },
+  weekDayToday: {
+    color: '#FFFFFF',
+  },
+  weekColour: {
+    fontFamily: fonts.mono,
+    fontSize: 8,
+    color: '#6B7280',
   },
   listCard: {
     backgroundColor: '#161A23',
@@ -446,7 +650,7 @@ const styles = StyleSheet.create({
   itemSub: {
     fontFamily: fonts.sans,
     fontSize: 12,
-    color: '#9CA3AF',
+    color: '#C8CDD6',
   },
   itemPrice: {
     fontFamily: fonts.sansMd,
@@ -523,7 +727,7 @@ const styles = StyleSheet.create({
   scanSummarySub: {
     fontFamily: fonts.sans,
     fontSize: 11,
-    color: '#9CA3AF',
+    color: '#C8CDD6',
   },
   completedBadge: {
     borderWidth: 1,
@@ -551,7 +755,7 @@ const styles = StyleSheet.create({
   scanStatLabel: {
     fontFamily: fonts.sansBold,
     fontSize: 9,
-    color: '#9CA3AF',
+    color: '#C8CDD6',
     letterSpacing: 0.5,
   },
   scanStatVal: {
@@ -566,7 +770,7 @@ const styles = StyleSheet.create({
   accuracyLabel: {
     fontFamily: fonts.sansMd,
     fontSize: 12,
-    color: '#D1D5DB',
+    color: '#E8EAED',
   },
   accuracyVal: {
     fontFamily: fonts.sansBold,
@@ -594,7 +798,7 @@ const styles = StyleSheet.create({
   viewScanBtnText: {
     fontFamily: fonts.sansBold,
     fontSize: 12,
-    color: '#D1D5DB',
+    color: '#E8EAED',
     letterSpacing: 1,
   },
   bottomNav: {
@@ -628,7 +832,7 @@ const styles = StyleSheet.create({
   navText: {
     fontFamily: fonts.sans,
     fontSize: 10,
-    color: '#9CA3AF',
+    color: '#C8CDD6',
   },
   navTextActive: {
     fontFamily: fonts.sansMd,

@@ -1,23 +1,24 @@
 import { create } from 'zustand';
 import type { ClassificationResult } from '../ml/prediction';
 import type {
-  CaptureMedia,
-  GalleryItem,
-  PredictionLogEntry,
-  StoredClassification,
-  StoredYoloDetection,
-  TrayDetection,
+    CaptureMedia,
+    GalleryItem,
+    PredictionLogEntry,
+    StoredClassification,
+    StoredYoloDetection,
+    TrayDetection,
+    VideoFrameReport,
 } from '../types';
 import { MAX_GALLERY_ITEMS } from '../types';
 import {
-  clearAllGalleryFiles,
-  createGalleryId,
-  deleteGalleryItemFiles,
-  loadGalleryIndex,
-  persistCaptureMedia,
-  pruneGalleryItems,
-  sumGalleryBytes,
-  writeGalleryIndex,
+    clearAllGalleryFiles,
+    createGalleryId,
+    deleteGalleryItemFiles,
+    loadGalleryIndex,
+    persistCaptureMedia,
+    pruneGalleryItems,
+    sumGalleryBytes,
+    writeGalleryIndex,
 } from '../utils/galleryStorage';
 import { buildDummyDetections } from '../utils/scanHelpers';
 
@@ -82,10 +83,18 @@ interface ScanState {
     expectedCount?: number,
     classification?: ClassificationResult | null,
     yoloDetections?: StoredYoloDetection[] | null,
+    videoFrameReports?: VideoFrameReport[] | null,
+    /** Distinct de-duped labels from the sweep (preferred over dummy trays). */
+    trayDetections?: TrayDetection[] | null,
   ) => Promise<GalleryItem | null>;
   updateGalleryClassification: (
     id: string,
     classification: StoredClassification,
+  ) => Promise<void>;
+  updateGalleryVideoReports: (
+    id: string,
+    videoFrameReports: VideoFrameReport[],
+    yoloDetections?: StoredYoloDetection[] | null,
   ) => Promise<void>;
   openGalleryItem: (id: string) => boolean;
   removeGalleryItem: (id: string) => Promise<void>;
@@ -132,9 +141,19 @@ export const useScanStore = create<ScanState>((set, get) => ({
     set({ gallery: items, galleryHydrated: true });
   },
 
-  completeCapture: async (media, expectedCount, classification, yoloDetections) => {
+  completeCapture: async (
+    media,
+    expectedCount,
+    classification,
+    yoloDetections,
+    videoFrameReports,
+    trayDetections,
+  ) => {
     const count = expectedCount ?? get().expectedCount;
-    const detections = buildDummyDetections(count);
+    const detections =
+      trayDetections != null && trayDetections.length > 0
+        ? trayDetections.map((d) => ({ ...d }))
+        : buildDummyDetections(count);
     const id = createGalleryId();
     const createdAt = Date.now();
     const stored =
@@ -148,6 +167,13 @@ export const useScanStore = create<ScanState>((set, get) => ({
       yoloDetections != null && yoloDetections.length > 0
         ? yoloDetections.map((d) => ({ ...d }))
         : undefined;
+    const frames =
+      videoFrameReports != null && videoFrameReports.length > 0
+        ? videoFrameReports.map((r) => ({
+            ...r,
+            detections: r.detections.map((d) => ({ ...d })),
+          }))
+        : undefined;
 
     try {
       const persistedMedia = await persistCaptureMedia(media, id);
@@ -159,6 +185,7 @@ export const useScanStore = create<ScanState>((set, get) => ({
         createdAt,
         classification: stored,
         yoloDetections: yolo,
+        videoFrameReports: frames,
       };
 
       const nextGallery = await pruneGalleryItems([item, ...get().gallery], MAX_GALLERY_ITEMS);
@@ -198,6 +225,31 @@ export const useScanStore = create<ScanState>((set, get) => ({
     );
     await writeGalleryIndex(next);
     set({ gallery: next });
+  },
+
+  updateGalleryVideoReports: async (id, videoFrameReports, yoloDetections) => {
+    const next = get().gallery.map((item) =>
+      item.id === id
+        ? {
+            ...item,
+            videoFrameReports,
+            yoloDetections: yoloDetections ?? item.yoloDetections,
+          }
+        : item,
+    );
+    await writeGalleryIndex(next);
+    const active = get().activeGalleryId === id;
+    set({
+      gallery: next,
+      ...(active
+        ? {
+            yoloDetections:
+              yoloDetections ??
+              next.find((g) => g.id === id)?.yoloDetections ??
+              get().yoloDetections,
+          }
+        : {}),
+    });
   },
 
   openGalleryItem: (id) => {

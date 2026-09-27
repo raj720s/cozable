@@ -1,14 +1,15 @@
 {
+  "_comment": "DO NOT EDIT — Expo reads ../app.json at the project root. This file is a mirror only.",
   "expo": {
     "name": "Cozable",
     "slug": "cozable",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/logo.png",
+    "icon": "./logo.png",
     "scheme": "cozable",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/logo.png",
+      "icon": "./logo.png",
       "bundleIdentifier": "com.war85ren2.cozable",
       "infoPlist": {
         "NSCameraUsageDescription": "Cozable needs camera access to scan day-colour tray labels in real-time.",
@@ -18,7 +19,7 @@
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#121316",
-        "foregroundImage": "./assets/logo.png"
+        "foregroundImage": "./logo.png"
       },
       "predictiveBackGestureEnabled": false,
       "package": "com.war85ren2.cozable",
@@ -29,7 +30,7 @@
     },
     "web": {
       "output": "static",
-      "favicon": "./assets/logo.png"
+      "favicon": "./logo.png"
     },
     "plugins": [
       "expo-router",

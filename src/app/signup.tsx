@@ -2,6 +2,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { router } from 'expo-router';
 import { useState } from 'react';
 import {
+  Image,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -12,8 +13,7 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { AnimatedLogo } from '../components/AnimatedLogo';
-import { colors, fonts } from '../theme/scanner';
+import { colors, fonts, images } from '../theme/scanner';
 
 export default function SignupScreen() {
   const [fullName, setFullName] = useState('Rahul Sharma');
@@ -46,7 +46,7 @@ export default function SignupScreen() {
               <Text style={styles.backIcon}>‹</Text>
             </TouchableOpacity>
             <View style={styles.logoRow}>
-              <AnimatedLogo size={32} />
+              <Image source={images.logo} style={styles.logoMark} resizeMode="contain" />
               <Text style={styles.logoText1}>COLOR</Text>
               <Text style={styles.logoText2}>SWEEP</Text>
             </View>
@@ -175,7 +175,7 @@ export default function SignupScreen() {
           {/* Footer */}
           <View style={styles.footer}>
             <Text style={styles.footerText}>
-              Already have an account? <Text style={styles.linkText} onPress={() => router.replace('/')}>Login</Text>
+              Already have an account? <Text style={styles.linkText} onPress={() => router.replace('/login')}>Login</Text>
             </Text>
           </View>
         </ScrollView>
@@ -218,6 +218,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+  },
+  logoMark: {
+    width: 28,
+    height: 28,
   },
   logoDot: {
     width: 10,

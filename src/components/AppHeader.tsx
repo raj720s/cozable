@@ -1,23 +1,22 @@
 import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { AppIcon, type AppIconName } from './AppIcon';
 import { colors, fonts } from '../theme/scanner';
 
 interface AppHeaderProps {
   title: string;
   onLeftPress?: () => void;
-  leftIcon?: string;
-  rightIcon?: string;
+  leftIcon?: AppIconName;
+  rightIcon?: AppIconName;
   onRightPress?: () => void;
-  /** Optional second right icon */
-  rightIcon2?: string;
+  rightIcon2?: AppIconName;
   onRightPress2?: () => void;
-  /** Small live dot next to title */
   showLiveDot?: boolean;
 }
 
 export function AppHeader({
   title,
   onLeftPress,
-  leftIcon,
+  leftIcon = 'arrow-left',
   rightIcon,
   onRightPress,
   rightIcon2,
@@ -26,34 +25,32 @@ export function AppHeader({
 }: AppHeaderProps) {
   return (
     <View style={styles.header}>
-      {/* Left */}
       {onLeftPress ? (
         <TouchableOpacity style={styles.iconBtn} onPress={onLeftPress} activeOpacity={0.7}>
-          <Text style={styles.iconText}>{leftIcon ?? '←'}</Text>
+          <AppIcon name={leftIcon} size={20} color={colors.white} />
         </TouchableOpacity>
       ) : (
         <View style={styles.iconBtn} />
       )}
 
-      {/* Title */}
       <View style={styles.titleRow}>
         {showLiveDot && <View style={styles.liveDot} />}
         <Text style={styles.title}>{title}</Text>
       </View>
 
-      {/* Right icons */}
       <View style={styles.rightCluster}>
-        {rightIcon2 && onRightPress2 && (
+        {rightIcon2 && onRightPress2 ? (
           <TouchableOpacity style={styles.iconBtn} onPress={onRightPress2} activeOpacity={0.7}>
-            <Text style={styles.iconText}>{rightIcon2}</Text>
+            <AppIcon name={rightIcon2} size={20} color={colors.white} />
           </TouchableOpacity>
-        )}
-        {rightIcon && onRightPress && (
+        ) : null}
+        {rightIcon && onRightPress ? (
           <TouchableOpacity style={styles.iconBtn} onPress={onRightPress} activeOpacity={0.7}>
-            <Text style={styles.iconText}>{rightIcon}</Text>
+            <AppIcon name={rightIcon} size={20} color={colors.white} />
           </TouchableOpacity>
-        )}
-        {!rightIcon && <View style={styles.iconBtn} />}
+        ) : !rightIcon ? (
+          <View style={styles.iconBtn} />
+        ) : null}
       </View>
     </View>
   );
@@ -84,7 +81,7 @@ const styles = StyleSheet.create({
   title: {
     fontFamily: fonts.sansBold,
     fontSize: 13,
-    color: colors.onSurface,
+    color: colors.white,
     letterSpacing: 1.5,
     textTransform: 'uppercase',
   },
@@ -100,9 +97,5 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surfaceContainerHigh,
     alignItems: 'center',
     justifyContent: 'center',
-  },
-  iconText: {
-    fontSize: 16,
-    color: colors.onSurfaceVariant,
   },
 });

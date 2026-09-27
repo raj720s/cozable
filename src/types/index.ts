@@ -35,11 +35,13 @@ export const CONFIDENCE_THRESHOLD = 0.85;
 export const CLASSIFY_LOCK_SCORE = 0.5;
 
 export interface TrayDetection {
-  /** 1-based tray sequence number in the rack. */
+  /** 1-based tray sequence number in the rack (label_sequence_number). */
   sequence: number;
   colour: DayColour;
   confidence: number;
-  /** Optional ImageNet / model label when available. */
+  /** ms since capture/recording start when first seen (frame_timestamp). */
+  frameTimestampMs?: number;
+  /** Optional model label string when available. */
   modelLabel?: string;
 }
 
@@ -70,6 +72,14 @@ export interface StoredYoloDetection {
   label: string;
 }
 
+/** One sampled YOLO snapshot while a video was recording. */
+export interface VideoFrameReport {
+  /** Milliseconds since recording started. */
+  atMs: number;
+  frameIndex: number;
+  detections: StoredYoloDetection[];
+}
+
 export interface StoredClassification {
   index: number;
   label: string;
@@ -89,6 +99,8 @@ export interface GalleryItem {
   classification?: StoredClassification;
   /** Full YOLO boxes for this capture (normalized 0..1). */
   yoloDetections?: StoredYoloDetection[];
+  /** Frame-wise YOLO samples collected during REC (video only). */
+  videoFrameReports?: VideoFrameReport[];
 }
 
 export interface PredictionLogEntry {
